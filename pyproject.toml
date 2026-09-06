@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nagato-mcp-tools"
+version = "0.1.6"
+description = "Agent-First MCP Toolkit -- code search, editing, execution, and analysis tools for any MCP client."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    {name = "David Schirmer", email = "mcp@chromoforge.de"}
+]
+maintainers = [
+    {name = "David Schirmer", email = "mcp@chromoforge.de"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mcp>=2.1.0,<3.0.0",
+    "numpy>=1.24.0",
+    "ddgs>=0.5.0",
+    "ruff>=0.3.0",
+    "tiktoken>=0.5.0",
+    "PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://chromoforge.de/mcp"
+Repository = "https://github.com/Chromoforge/nagato-mcp-tools"
+Issues = "https://github.com/Chromoforge/nagato-mcp-tools/issues"
+Security = "https://github.com/Chromoforge/nagato-mcp-tools/security/advisories"
+
+[project.optional-dependencies]
+semantic = [
+    "fastembed>=0.4.0",
+    "sqlite-vec>=0.1.6",
+    "onnxruntime>=1.16.0",
+]
+ui = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.22.0",
+    "websockets>=11.0",
+    "aiofiles>=23.0.0",
+]
+monitor = [
+    "psutil>=5.9.0",
+    "nvidia-ml-py>=13.610.43",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+]
+
+[project.scripts]
+# Route through __main__ so console-script invocations load the module as
+# __main__ (not a package submodule) and avoid the runpy "found in sys.modules
+# after import of package" RuntimeWarning.
+nagato-mcp-tools = "nagato_mcp_tools.__main__:main"
+nagato-ui = "nagato_mcp_tools.ui_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["nagato_mcp_tools*", "nagato_tools*"]
+
+[tool.setuptools.package-data]
+"nagato_tools.webui_dist" = ["**/*"]
+[tool.setuptools.exclude-package-data]
+"*" = ["__pycache__", "**/__pycache__", "*.pyc", "*.pyo"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I", "UP", "W"]
+ignore = ["E501", "UP006", "UP007"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
