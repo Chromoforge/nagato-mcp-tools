@@ -21,17 +21,38 @@ _fastembed = None
 _sqlite_vec = None
 _onnxruntime = None
 
+# Type annotation and runtime fallback when fastembed/numpy are not yet loaded
+try:
+    from fastembed import TextEmbedding
+except ImportError:
+    TextEmbedding = Any  # type: ignore[assignment,misc]
+
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
+
 def _get_semantic_index_search():
     """Lazy-load SemanticIndexSearch and its heavy dependencies."""
-    global _SemanticIndexSearch, _fastembed, _sqlite_vec, _onnxruntime
+    global _SemanticIndexSearch, _fastembed, _sqlite_vec, _onnxruntime, TextEmbedding, np
     if _SemanticIndexSearch is None:
         try:
             import fastembed
             _fastembed = fastembed
+            from fastembed import TextEmbedding as _TE
+            TextEmbedding = _TE
         except ImportError:
             raise ImportError(
                 "Semantic search requires 'fastembed'. "
                 "Install with: pip install nagato-mcp-functions[semantic]"
+            )
+        try:
+            import numpy as _np
+            np = _np
+        except ImportError:
+            raise ImportError(
+                "Semantic search requires 'numpy'. "
+                "Install with: pip install numpy"
             )
         try:
             import sqlite_vec

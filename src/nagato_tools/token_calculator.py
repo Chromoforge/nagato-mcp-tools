@@ -6,7 +6,7 @@ This module replaces duplicated token estimation logic in multiple files.
 """
 
 import tiktoken
-from typing import List, Dict, Optional
+from typing import Any, Dict, List, Optional
 from functools import lru_cache
 
 # Module-level encoding cache
@@ -111,7 +111,7 @@ def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
     """
     try:
         from fsm.token_budget import TokenBudget  # host-only
-    except ImportError:
+    except (ImportError, Exception):
         TokenBudget = None  # type: ignore[misc]  # fsm-only; standalone gets None
     # Get the context block (NFSM CTX)
     nfsm_ctx = context.ContextBlock if hasattr(context, 'ContextBlock') else ""

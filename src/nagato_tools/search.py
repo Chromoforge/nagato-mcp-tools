@@ -516,7 +516,7 @@ async def nagato_set_semantic_search_root(path: str, _ctx: Optional[Any] = None)
         try:
             try:
                 from fsm.session import write_state_file  # host-only  # host-only
-            except ImportError:
+            except (ImportError, Exception):
                 write_state_file  # host-only = None  # type: ignore[misc]  # fsm-only; standalone gets None
         except ImportError:
             write_state_file = None  # type: ignore[assignment]

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nagato-mcp-tools"
-version = "0.1.6"
+version = "0.1.7"
 description = "Agent-First MCP Toolkit -- code search, editing, execution, and analysis tools for any MCP client."
 readme = "README.md"
 license = { text = "MIT" }

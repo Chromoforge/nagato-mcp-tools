@@ -5,12 +5,12 @@ from typing import Any, Optional
 from nagato_tools.config import get_workspace_root
 try:
     from fsm.events import Event  # host-only
-except ImportError:
+except (ImportError, Exception):
     Event = None  # type: ignore[misc]  # fsm-only; standalone gets None
 from nagato_tools.errors import _nagato_error as nagato_error
 try:
     from fsm.transition_apply import apply_event  # host-only
-except ImportError:
+except (ImportError, Exception):
     apply_event = None  # type: ignore[misc]  # fsm-only; standalone gets None
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
     """Get workspace root from context or fall back to config."""
@@ -132,15 +132,15 @@ async def nagato_upload(commit_message: str, _ctx: Optional[Any] = None) -> str:
     try:
         try:
             from fsm.nagato_fsm import NagatoFSM  # host-only
-        except ImportError:
+        except (ImportError, Exception):
             NagatoFSM = None  # type: ignore[misc]  # fsm-only; standalone gets None
         try:
             from fsm.events import Event  # host-only
-        except ImportError:
+        except (ImportError, Exception):
             Event = None  # type: ignore[misc]  # fsm-only; standalone gets None
         try:
             from fsm.transition_apply import apply_event  # host-only
-        except ImportError:
+        except (ImportError, Exception):
             apply_event = None  # type: ignore[misc]  # fsm-only; standalone gets None
         if NagatoFSM is not None:
             fsm = NagatoFSM()

@@ -61,7 +61,7 @@ def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str,
     try:
         try:
             from fsm import config as config_module  # host-only
-        except ImportError:
+        except (ImportError, Exception):
             config_module = None  # type: ignore[misc]  # fsm-only; standalone gets None
     except ImportError:
         try:
@@ -135,7 +135,7 @@ def _rollback_via_journal(file: str, ctx: Any) -> Dict[str, Any]:
         try:
             try:
                 from fsm import undo  # host-only
-            except ImportError:
+            except (ImportError, Exception):
                 undo = None  # type: ignore[misc]  # fsm-only; standalone gets None
         except ImportError:
             return {"rolled_back": False, "reason": "FSM undo service not available in this environment"}

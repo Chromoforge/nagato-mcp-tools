@@ -263,7 +263,7 @@ class FsmStateEffect:
     def _resolve_state_file(self, workspace_root: Path) -> Path:
         try:
             from fsm.session import get_state_file_path  # host-only
-        except ImportError:
+        except (ImportError, Exception):
             get_state_file_path = None  # type: ignore[misc]  # fsm-only; standalone gets None
         return get_state_file_path(self.session_id)
 
