@@ -167,6 +167,25 @@ Add a new stdio MCP server:
 
 ---
 
+## 🤖 Agent Instructions & Prompt Setup
+
+To get the most out of `nagato-mcp-tools`, your AI assistant (Copilot, Cursor, Claude Code, etc.) needs instructions on **how** and **when** to leverage AST navigation, safe edit loops, and undo capabilities.
+
+Copy the included **[`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)** into your project configuration:
+
+- **VS Code:** `.github/copilot-instructions.md`
+- **Cursor:** `.cursorrules` or `.cursor/rules/nagato.mdc`
+- **Claude Code / Claude Desktop:** `CLAUDE.md` or System Prompt
+- **Windsurf:** `.windsurfrules`
+
+The instructions guide the LLM to:
+1. **Explore first:** Use `nagato_read_signatures` and `nagato_searchAST` instead of reading entire files into context.
+2. **Safe edits:** Make surgical edits with `nagato_edit`, immediately run `nagato_lint`, and verify tests.
+3. **Rollback easily:** Use `nagato_undo_standalone` if changes fail instead of doing messy manual reversions.
+4. **Insight Architecture:** Keep track of dependencies with `nagato_view_radar` and `nagato_sync_ast_to_insight`.
+
+---
+
 ## 🛠️ Registered Tools (31 Tools)
 
 | Category | Available Tools | Description |
