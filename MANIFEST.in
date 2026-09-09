@@ -1,0 +1,18 @@
+# MANIFEST.in for nagato-mcp-tools
+# Ensures documentation, licenses, and assets are cleanly included in Source Distributions (.tar.gz)
+
+include README.md
+include LICENSE
+include AGENT_INSTRUCTIONS.md
+include check_release_safety.py
+include setup.py
+include pyproject.toml
+
+recursive-include src/nagato_tools/docs *.md LICENSE
+recursive-include src/nagato_tools/webui_dist *
+recursive-include tests *.py
+
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store
