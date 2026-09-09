@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nagato-mcp-tools"
-version = "0.1.7"
+version = "0.1.8"
 description = "Agent-First MCP Toolkit -- code search, editing, execution, and analysis tools for any MCP client."
 readme = "README.md"
 license = { text = "MIT" }
@@ -73,6 +73,7 @@ where = ["src"]
 include = ["nagato_mcp_tools*", "nagato_tools*"]
 
 [tool.setuptools.package-data]
+"nagato_tools" = ["docs/*", "docs/**/*"]
 "nagato_tools.webui_dist" = ["**/*"]
 [tool.setuptools.exclude-package-data]
 "*" = ["__pycache__", "**/__pycache__", "*.pyc", "*.pyo"]
