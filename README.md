@@ -214,8 +214,14 @@ Install the `[ui]` extra and run `nagato-ui`:
 
 ```bash
 pip install "nagato-mcp-tools[ui]"
-nagato-ui --workspace . --port 8080 --open-browser
+nagato-ui --workspace /path/to/target-project --port 8080 --open-browser
 ```
+
+> **Crucial — Matching `--workspace`**:
+> The WebUI dashboard loads Insight knowledge graphs and audit logs from the project directory specified in `--workspace`.
+> Ensure that the `--workspace` parameter given to `nagato-ui` matches the `--workspace` path configured in your MCP client (`mcp.json`). If they do not match, the WebUI will monitor a different directory and report *"No Insight Data"*.
+>
+> *(Note: If you run the full FSM runtime via `python -m fsm.api.server`, it also accepts `--workspace /path/to/target-project` or the `$env:NAGATO_WORKSPACE_ROOT` environment variable).*
 
 ### Features
 - 📊 **Real-Time Audit Stream**: Live WebSocket event stream of tool dispatches, execution durations, and payloads.
@@ -294,7 +300,7 @@ print(facade.get_filter_status())
 
 ## ⚙️ Configuration (`.nagato/functions_config.json`)
 
-Standalone tool behaviors (Semantic Search, Ruff Linting, and Nagato Insight Knowledge Graph) are configured per-workspace via `.nagato/functions_config.json`. Place this file inside the `.nagato/` folder of your project root:
+Standalone tool behaviors (Semantic Search, Ruff Linting, Nagato Insight Knowledge Graph, and Output Truncation) are configured per-workspace via `.nagato/functions_config.json`. Place this file inside the `.nagato/` folder of your project root:
 
 ```json
 {
@@ -315,11 +321,40 @@ Standalone tool behaviors (Semantic Search, Ruff Linting, and Nagato Insight Kno
     "soft_mode": true,
     "auto_fix": false,
     "ruff_path": "ruff"
+  },
+  "tool_token_limits": {
+    "default": 20000,
+    "read": 20000,
+    "search": 20000,
+    "web": 10000,
+    "shell": 20000
   }
 }
 ```
 
-> **Note on Insight**: In standalone MCP Tools builds with Insight enabled, Insight is **disabled by default** until explicitly enabled in `.nagato/functions_config.json` via `"insight": {"enabled": true}`. When enabled, AST background synchronization runs automatically on edits (`nagato_edit`, `nagato_edit_lines`) and populates the local knowledge graph.
+### 📏 Output Truncation & Token Limits (`tool_token_limits`)
+
+To prevent huge files or unbounded searches from overwhelming LLM context windows, tool outputs (`nagato_read_file`, `nagato_read_lines`, `nagato_searchInFile`, `nagato_searchInFiles`, `nagato_web_search`, `nagato_shell`) are protected by configurable token limits.
+
+- **Default Limits (Standalone)**: 20,000 tokens for inspection, search, editing, and execution (providing ample room for large files while safeguarding against runaway memory dumps).
+- **Custom Limits**: Set category-specific limits (e.g. `"read": 40000`) or a blanket `"default": 50000` under `tool_token_limits` in `.nagato/functions_config.json`.
+- **Disable Truncation Completely**: Set a category or `"default"` to `0`, `null`, or `"unlimited"` (e.g. `"tool_token_limits": {"default": 0}`).
+- **Truncation Notice**: When truncated, outputs append `[TRUNCATED: X tokens omitted]`.
+
+> **Important — Workspace Configuration Location**:
+> The `.nagato/functions_config.json` file is loaded **relative to the target `--workspace` directory**, NOT from the directory where the MCP server / tool package is installed!
+>
+> For example, in your VS Code / Claude `mcp.json`:
+> ```json
+> "nagato-tools": {
+>   "type": "stdio",
+>   "command": "nagato-mcp-tools",
+>   "args": ["--workspace", "/path/to/target-project"]
+> }
+> ```
+> Nagato will look for `/path/to/target-project/.nagato/functions_config.json`. If this file is missing or lacks an `"insight": {"enabled": true}` section in the target project, Insight remains disabled and the WebUI will show *"No Insight Data"*.
+>
+> > **Note on Insight**: In standalone MCP Tools builds with Insight enabled, Insight is **disabled by default** until explicitly enabled in the target workspace's `.nagato/functions_config.json` via `"insight": {"enabled": true}`. When enabled, AST background synchronization runs automatically on edits (`nagato_edit`, `nagato_edit_lines`) and populates the local knowledge graph.
 
 ---
 

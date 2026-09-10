@@ -111,6 +111,41 @@ def resolve_webui_dist_dir() -> Optional[Path]:
     return None
 
 
+
+class InsightNodeResponse(BaseModel):
+    id: str
+    type: str
+    title: str
+    summary: str
+    origin: str = "manual"
+    origin_file: str = ""
+    origin_symbol: str = ""
+    status: str = "ACTIVE"
+    last_synced_at: float = 0.0
+
+
+class InsightEdgeResponse(BaseModel):
+    id: int
+    source_id: str
+    target_id: str
+    relation: str
+    semantic_reason: str = ""
+    linked_at_mtime: float = 0.0
+    confidence: float = 1.0
+    evidence_refs: list[str] = []
+    created_by: str = "manual"
+    tags: list[str] = []
+    weight: float = 1.0
+
+
+class InsightGraphResponse(BaseModel):
+    session_id: str
+    nodes: list[InsightNodeResponse] = []
+    edges: list[InsightEdgeResponse] = []
+    node_count: int = 0
+    edge_count: int = 0
+
+
 def create_app(workspace_root: Optional[Union[str, Path]] = None, session_id: Optional[str] = None) -> FastAPI:
     """Create and configure the Standalone WebUI FastAPI application."""
     ws_root = Path(workspace_root or Path.cwd()).resolve()
@@ -261,6 +296,95 @@ def create_app(workspace_root: Optional[Union[str, Path]] = None, session_id: Op
             "total_events": len(events),
             "undo_status": undo_status.model_dump(),
         }
+
+
+    @app.get("/api/v1/standalone/insight/graph", response_model=InsightGraphResponse, tags=["standalone"])
+    async def get_standalone_insight_graph(
+        session_id: Optional[str] = Query(None, description="Session ID. Defaults to NAGATO_SESSION_ID or 'standalone'."),
+    ):
+        """Get the full Insight knowledge graph for standalone mode."""
+        resolved_session_id = _resolve_request_session_id(session_id)
+        
+        def _build_response() -> InsightGraphResponse:
+            try:
+                from nagato_tools.insight_store import InsightStore
+            except ImportError:
+                return InsightGraphResponse(
+                    session_id=resolved_session_id,
+                    nodes=[],
+                    edges=[],
+                    node_count=0,
+                    edge_count=0,
+                )
+            
+            insight_store = InsightStore(
+                workspace_root=ws_root,
+                session_id=resolved_session_id,
+            )
+            try:
+                nodes = insight_store.get_all_nodes(include_orphaned=True)
+                edges = insight_store.conn.execute(
+                    "SELECT id, source_id, target_id, relation, semantic_reason, linked_at_mtime, confidence, evidence_refs, created_by, tags, weight FROM memory_edges"
+                ).fetchall()
+                
+                node_responses = [
+                    InsightNodeResponse(
+                        id=n.id,
+                        type=n.type.value,
+                        title=n.title,
+                        summary=n.summary,
+                        origin=n.origin,
+                        origin_file=n.origin_file,
+                        origin_symbol=n.origin_symbol,
+                        status=n.status,
+                        last_synced_at=n.last_synced_at,
+                    )
+                    for n in nodes
+                ]
+                
+                edge_responses = []
+                for row in edges:
+                    evidence_raw = row["evidence_refs"] if "evidence_refs" in row.keys() and row["evidence_refs"] else []
+                    tags_raw = row["tags"] if "tags" in row.keys() and row["tags"] else []
+                    import json
+                    if isinstance(evidence_raw, str):
+                        try: evidence_refs = json.loads(evidence_raw)
+                        except Exception: evidence_refs = []
+                    else:
+                        evidence_refs = list(evidence_raw)
+                    if isinstance(tags_raw, str):
+                        try: tags = json.loads(tags_raw)
+                        except Exception: tags = []
+                    else:
+                        tags = list(tags_raw)
+
+                    edge_responses.append(
+                        InsightEdgeResponse(
+                            id=row["id"],
+                            source_id=row["source_id"],
+                            target_id=row["target_id"],
+                            relation=row["relation"],
+                            semantic_reason=row["semantic_reason"] or "",
+                            linked_at_mtime=row["linked_at_mtime"] if "linked_at_mtime" in row.keys() else 0.0,
+                            confidence=row["confidence"] if "confidence" in row.keys() and row["confidence"] is not None else 1.0,
+                            evidence_refs=evidence_refs,
+                            created_by=row["created_by"] if "created_by" in row.keys() and row["created_by"] else "manual",
+                            tags=tags,
+                            weight=row["weight"] if "weight" in row.keys() and row["weight"] is not None else 1.0,
+                        )
+                    )
+                
+                return InsightGraphResponse(
+                    session_id=resolved_session_id,
+                    nodes=node_responses,
+                    edges=edge_responses,
+                    node_count=len(node_responses),
+                    edge_count=len(edge_responses),
+                )
+            finally:
+                insight_store.close()
+
+        return await asyncio.to_thread(_build_response)
 
     @app.websocket("/api/v1/standalone/stream")
     async def stream_standalone_audit(

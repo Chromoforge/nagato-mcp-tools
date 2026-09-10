@@ -52,6 +52,7 @@ class FunctionsConfig:
     lint: LintConfig = field(default_factory=LintConfig)
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     insight: dict = field(default_factory=dict)
+    tool_token_limits: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FunctionsConfig":
@@ -61,6 +62,8 @@ class FunctionsConfig:
             config.ignored_dirs = data["ignored_dirs"]
         if "insight" in data and isinstance(data["insight"], dict):
             config.insight = data["insight"]
+        if "tool_token_limits" in data and isinstance(data["tool_token_limits"], dict):
+            config.tool_token_limits = data["tool_token_limits"]
         if "semantic_search" in data:
             ss_data = data["semantic_search"]
             config.semantic_search = SemanticSearchConfig(
@@ -89,7 +92,6 @@ def get_workspace_root() -> Path:
     import importlib
     try:
         fsm_config = None  # fsm.config is host-only; standalone uses defaults
-        return Path.cwd()  # standalone: workspace root defaults to cwd
         return fsm_config.get_workspace_root()
     except (ImportError, AttributeError):
         return Path.cwd()
@@ -164,7 +166,6 @@ def get_insight_config(config_path: Optional[Path] = None) -> dict:
     import importlib
     try:
         fsm_config = None  # fsm.config is host-only; standalone uses defaults
-        return Path.cwd()  # standalone: workspace root defaults to cwd
         return fsm_config.get_insight_config()
     except (ImportError, AttributeError):
         pass
@@ -182,7 +183,6 @@ def get_force_insight_config() -> dict:
     import importlib
     try:
         fsm_config = None  # fsm.config is host-only; standalone uses defaults
-        return Path.cwd()  # standalone: workspace root defaults to cwd
         return fsm_config.get_force_insight_config()
     except (ImportError, AttributeError):
         pass
@@ -236,32 +236,63 @@ def resolve_db_path(config: SemanticSearchConfig, workspace_root: Optional[Path]
     return str(workspace_root / "nagato_codebase.db")
 
 
-def get_tool_token_limit(category: str) -> int:
+def get_tool_token_limit(category: str, config_path: Optional[Path] = None) -> Optional[int]:
     """
     Get the token limit for a specific tool category with cascading fallback.
     
-    Standalone version: returns sensible defaults without YAML config.
+    Standalone version: checks .nagato/functions_config.json, then returns sensible defaults.
+    
+    Resolution order:
+    1. Explicit category override in functions_config.json: tool_token_limits.<category>
+    2. Global default in functions_config.json: tool_token_limits.default
+    3. Standalone built-in default for category
+    
+    If set to 0, negative, null, or 'unlimited' / 'none' / 'off', truncation is disabled (returns None).
     
     Args:
         category: Tool category string (e.g., "read", "search", "web", "edit", "shell")
+        config_path: Optional path to custom config file
         
     Returns:
-        Token limit for the given category
+        Token limit int, or None if truncation is disabled
     """
+    cat_lower = category.lower()
+    try:
+        cfg = load_functions_config(config_path)
+        if cfg.tool_token_limits:
+            raw_val = None
+            if cat_lower in cfg.tool_token_limits:
+                raw_val = cfg.tool_token_limits[cat_lower]
+            elif "default" in cfg.tool_token_limits:
+                raw_val = cfg.tool_token_limits["default"]
+            
+            if raw_val is not None:
+                if isinstance(raw_val, str) and raw_val.lower() in ("none", "unlimited", "disabled", "off"):
+                    return None
+                try:
+                    val_int = int(raw_val)
+                    if val_int <= 0:
+                        return None  # 0 or negative means unlimited (no truncation)
+                    return val_int
+                except (ValueError, TypeError):
+                    pass
+    except Exception:
+        pass
+
     # Standalone defaults
     defaults = {
-        "read": 1000,
-        "search": 1000,
-        "web": 1000,
-        "edit": 1000,
-        "shell": 1000,
-        "execute": 1000,
-        "lint": 1000,
-        "git": 1000,
-        "test": 1000,
-        "debug": 1000,
+        "read": 20000,
+        "search": 20000,
+        "web": 10000,
+        "edit": 20000,
+        "shell": 20000,
+        "execute": 20000,
+        "lint": 20000,
+        "git": 20000,
+        "test": 20000,
+        "debug": 20000,
     }
-    return defaults.get(category.lower(), 1000)
+    return defaults.get(cat_lower, 20000)
 
 
 def get_token_limits() -> tuple[int, int]:

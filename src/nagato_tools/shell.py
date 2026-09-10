@@ -14,7 +14,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from nagato_tools.config import get_workspace_root
+from nagato_tools.config import get_tool_token_limit, get_workspace_root
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _get_context_token_limit, _truncate_to_token_limit
 
@@ -345,7 +345,7 @@ async def _nagato_shell_raw(
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         
         # Truncate output based on context token limit
-        max_tokens = _get_context_token_limit(ctx)
+        max_tokens = _get_context_token_limit(ctx, default=get_tool_token_limit("shell"))
         stdout_truncated = _truncate_to_token_limit(stdout, max_tokens, ctx)
         stderr_truncated = _truncate_to_token_limit(stderr, max_tokens, ctx)
         

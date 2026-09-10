@@ -46,7 +46,10 @@ def _truncate_to_token_limit(text: str, max_tokens: int | None = None, ctx: Any 
     if max_tokens is None:
         max_tokens = _get_context_token_limit(ctx)
 
-    if max_tokens <= 0 or not text:
+    if max_tokens is None or max_tokens <= 0:
+        return text
+
+    if not text:
         return ""
 
     token_count = estimate(text)
