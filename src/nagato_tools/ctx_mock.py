@@ -97,6 +97,9 @@ class MockFSMContext:
     
     # Behavior flags
     bHardHandOff = False
+    hard_handoff_post_toolcall = True
+    hard_handoff_post_state_transition = True
+    hard_handoff_post_subgoal_push = False
     bStepTrace = False
     
     # Other fields accessed by functions (class attributes for defaults)
@@ -582,7 +585,8 @@ class MockFSMContext:
         
         # Token count
         soft_tokens = estimate("\n".join(lines))
-        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens} (ctx:{soft_tokens} sys:0 handoff:0 output:0 mcp:0)")
+        if get_show_token_budget_to_llm():
+            lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens} (ctx:{soft_tokens} sys:0 handoff:0 last_result:0 tool_docs:0)")
         if soft_tokens > self.MaxContextTokens:
             lines.append(
                 f"⚠️ TOKEN_BUDGET_WARNING: NFSM Context is {soft_tokens} tokens "
@@ -623,7 +627,8 @@ class MockFSMContext:
             lines.append(f"last_result={snapshot['last_action_result']}")
         
         soft_tokens = estimate("\n".join(lines))
-        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
+        if get_show_token_budget_to_llm():
+            lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
         if soft_tokens > self.MaxContextTokens:
             lines.append(f"⚠️ TOKEN_BUDGET_WARNING: {soft_tokens} tokens (limit {self.MaxContextTokens})")
         
@@ -686,7 +691,8 @@ class MockFSMContext:
         lines.append(json_str)
         
         soft_tokens = estimate("\n".join(lines))
-        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
+        if get_show_token_budget_to_llm():
+            lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
         if soft_tokens > self.MaxContextTokens:
             lines.append(f"⚠️ TOKEN_BUDGET_WARNING: {soft_tokens} tokens (limit {self.MaxContextTokens})")
         

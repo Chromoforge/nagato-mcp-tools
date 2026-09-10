@@ -51,6 +51,7 @@ class FunctionsConfig:
     semantic_search: SemanticSearchConfig = field(default_factory=SemanticSearchConfig)
     lint: LintConfig = field(default_factory=LintConfig)
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
+    insight: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FunctionsConfig":
@@ -58,6 +59,8 @@ class FunctionsConfig:
         config = cls()
         if "ignored_dirs" in data:
             config.ignored_dirs = data["ignored_dirs"]
+        if "insight" in data and isinstance(data["insight"], dict):
+            config.insight = data["insight"]
         if "semantic_search" in data:
             ss_data = data["semantic_search"]
             config.semantic_search = SemanticSearchConfig(
@@ -138,12 +141,26 @@ def get_ignored_dirs(config_path: Optional[Path] = None) -> frozenset[str]:
     return frozenset(load_functions_config(config_path).ignored_dirs)
 
 
-def get_insight_config() -> dict:
+def get_insight_config(config_path: Optional[Path] = None) -> dict:
     """Get the insight configuration with sensible defaults.
     
     Returns dict with keys: enabled, embedding_provider, embedding_model, embedding_base_url, embedding_dimension.
-    Disabled by default if no configuration or host layer is present.
+    Checks .nagato/functions_config.json first (standalone / project override), then falls back to fsm.config.
     """
+    cfg = load_functions_config(config_path)
+    if cfg.insight:
+        defaults = {
+            "enabled": False,
+            "embedding_provider": "fastembed",
+            "embedding_model": "jinaai/jina-embeddings-v2-base-code",
+            "embedding_base_url": "http://localhost:11434",
+            "embedding_dimension": 768,
+        }
+        res = dict(defaults)
+        res.update(cfg.insight)
+        res["enabled"] = bool(res.get("enabled", False))
+        return res
+
     import importlib
     try:
         fsm_config = None  # fsm.config is host-only; standalone uses defaults

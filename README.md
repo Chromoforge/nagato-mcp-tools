@@ -290,6 +290,39 @@ print(facade.get_filter_status())
 3. **`allowed_categories`** — Category-level allowlist
 4. **Default** — All discovered tools
 
+---
+
+## ⚙️ Configuration (`.nagato/functions_config.json`)
+
+Standalone tool behaviors (Semantic Search, Ruff Linting, and Nagato Insight Knowledge Graph) are configured per-workspace via `.nagato/functions_config.json`. Place this file inside the `.nagato/` folder of your project root:
+
+```json
+{
+  "insight": {
+    "enabled": true,
+    "embedding_provider": "fastembed",
+    "embedding_model": "jinaai/jina-embeddings-v2-base-code",
+    "embedding_dimension": 768
+  },
+  "semantic_search": {
+    "db_path": "nagato_codebase.db",
+    "embedding_model": "jina",
+    "dimension": 768,
+    "auto_index": true
+  },
+  "lint": {
+    "enabled": true,
+    "soft_mode": true,
+    "auto_fix": false,
+    "ruff_path": "ruff"
+  }
+}
+```
+
+> **Note on Insight**: In standalone MCP Tools builds with Insight enabled, Insight is **disabled by default** until explicitly enabled in `.nagato/functions_config.json` via `"insight": {"enabled": true}`. When enabled, AST background synchronization runs automatically on edits (`nagato_edit`, `nagato_edit_lines`) and populates the local knowledge graph.
+
+---
+
 
 ---
 

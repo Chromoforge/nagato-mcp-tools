@@ -128,27 +128,27 @@ def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
     handoff_artifact_tokens = estimate(handoff_artifact)
     
     # Agent output (LastActionResult)
-    agent_output = context.LastActionResult if hasattr(context, 'LastActionResult') else ""
-    agent_output_tokens = estimate(agent_output)
+    last_action_result = context.LastActionResult if hasattr(context, 'LastActionResult') else ""
+    last_action_result_tokens = estimate(last_action_result)
     
-    # MCP advance docstring (approximate)
-    mcp_advance_docstring = ""
+    # Tool docs (fsm_advance docstring)
+    tool_docs = ""
     if hasattr(context, 'FSM') and hasattr(context.FSM, 'advance_workflow'):
         import inspect
         doc = inspect.getdoc(context.FSM.advance_workflow)
         if doc:
-            mcp_advance_docstring = doc
-    mcp_advance_tokens = estimate(mcp_advance_docstring)
+            tool_docs = doc
+    tool_docs_tokens = estimate(tool_docs)
     
-    total = nfsm_ctx_tokens + system_prompt_tokens + handoff_artifact_tokens + agent_output_tokens + mcp_advance_tokens
+    total = nfsm_ctx_tokens + system_prompt_tokens + handoff_artifact_tokens + last_action_result_tokens + tool_docs_tokens
     limit = getattr(context, 'MaxContextTokens', 1200)
     
     return TokenBudget(
         nfsm_ctx=nfsm_ctx_tokens,
         system_prompt=system_prompt_tokens,
         handoff_artifact=handoff_artifact_tokens,
-        agent_output=agent_output_tokens,
-        mcp_advance_docstring=mcp_advance_tokens,
+        last_action_result=last_action_result_tokens,
+        tool_docs=tool_docs_tokens,
         total=total,
         limit=limit
     )
