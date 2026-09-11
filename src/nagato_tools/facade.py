@@ -309,7 +309,7 @@ class ToolFacade:
         result = None
         action_ctx = None
         if self._fsm is None and getattr(self.context, "active_action", None) is None:
-            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_link", "nagato_concept_collapse", "nagato_block_save", "nagato_block_delete"):
+            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_link", "nagato_concept_collapse", "nagato_block_save", "nagato_block_delete", "nagato_insight_promote_to_global"):
                 try:
                     from nagato_tools.action_journal import ActionJournal
                     sess_id = getattr(self.context, "session_id", "standalone")
@@ -399,7 +399,7 @@ class ToolFacade:
         result = None
         action_ctx = None
         if self._fsm is None and getattr(self.context, "active_action", None) is None:
-            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_link", "nagato_concept_collapse", "nagato_block_save", "nagato_block_delete"):
+            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_link", "nagato_concept_collapse", "nagato_block_save", "nagato_block_delete", "nagato_insight_promote_to_global"):
                 try:
                     from nagato_tools.action_journal import ActionJournal
                     sess_id = getattr(self.context, "session_id", "standalone")

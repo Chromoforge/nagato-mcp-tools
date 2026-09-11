@@ -19,6 +19,7 @@ class SignatureExtractor(ast.NodeVisitor):
         """
         self.file_path = file_path
         self.signatures = []
+        self.scope_stack = []
 
     def extract(self):
         """
@@ -40,21 +41,27 @@ class SignatureExtractor(ast.NodeVisitor):
         Captures a function signature.
         """
         self._add_signature(node, "function")
+        self.scope_stack.append(node.name)
         self.generic_visit(node)
+        self.scope_stack.pop()
 
     def visit_AsyncFunctionDef(self, node):
         """
         Captures an async function signature.
         """
         self._add_signature(node, "async_function")
+        self.scope_stack.append(node.name)
         self.generic_visit(node)
+        self.scope_stack.pop()
 
     def visit_ClassDef(self, node):
         """
         Captures a class signature.
         """
         self._add_signature(node, "class")
+        self.scope_stack.append(node.name)
         self.generic_visit(node)
+        self.scope_stack.pop()
 
     def _add_signature(self, node, kind):
         """
@@ -77,8 +84,13 @@ class SignatureExtractor(ast.NodeVisitor):
         elif hasattr(node, "args"):
             args = self._extract_args(node)
 
+        parent = self.scope_stack[-1] if self.scope_stack else ""
+        qualname = ".".join(self.scope_stack + [node.name])
+
         sig = {
             "symbol": node.name,
+            "qualname": qualname,
+            "parent": parent,
             "kind": kind,
             "file": self.file_path,
             "line": node.lineno,

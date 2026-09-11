@@ -182,7 +182,6 @@ The instructions guide the LLM to:
 1. **Explore first:** Use `nagato_read_signatures` and `nagato_searchAST` instead of reading entire files into context.
 2. **Safe edits:** Make surgical edits with `nagato_edit`, immediately run `nagato_lint`, and verify tests.
 3. **Rollback easily:** Use `nagato_undo_standalone` if changes fail instead of doing messy manual reversions.
-4. **Insight Architecture:** Keep track of dependencies with `nagato_view_radar` and `nagato_sync_ast_to_insight`.
 
 ---
 
@@ -218,8 +217,8 @@ nagato-ui --workspace /path/to/target-project --port 8080 --open-browser
 ```
 
 > **Crucial — Matching `--workspace`**:
-> The WebUI dashboard loads Insight knowledge graphs and audit logs from the project directory specified in `--workspace`.
-> Ensure that the `--workspace` parameter given to `nagato-ui` matches the `--workspace` path configured in your MCP client (`mcp.json`). If they do not match, the WebUI will monitor a different directory and report *"No Insight Data"*.
+> The WebUI dashboard loads telemetry and audit logs from the project directory specified in `--workspace`.
+> Ensure that the `--workspace` parameter given to `nagato-ui` matches the `--workspace` path configured in your MCP client (`mcp.json`). If they do not match, the WebUI will monitor a different directory.
 >
 > *(Note: If you run the full FSM runtime via `python -m fsm.api.server`, it also accepts `--workspace /path/to/target-project` or the `$env:NAGATO_WORKSPACE_ROOT` environment variable).*
 
@@ -300,16 +299,10 @@ print(facade.get_filter_status())
 
 ## ⚙️ Configuration (`.nagato/functions_config.json`)
 
-Standalone tool behaviors (Semantic Search, Ruff Linting, Nagato Insight Knowledge Graph, and Output Truncation) are configured per-workspace via `.nagato/functions_config.json`. Place this file inside the `.nagato/` folder of your project root:
+Standalone tool behaviors (Semantic Search, Ruff Linting, and Output Truncation) are configured per-workspace via `.nagato/functions_config.json`. Place this file inside the `.nagato/` folder of your project root:
 
 ```json
 {
-  "insight": {
-    "enabled": true,
-    "embedding_provider": "fastembed",
-    "embedding_model": "jinaai/jina-embeddings-v2-base-code",
-    "embedding_dimension": 768
-  },
   "semantic_search": {
     "db_path": "nagato_codebase.db",
     "embedding_model": "jina",
@@ -352,10 +345,7 @@ To prevent huge files or unbounded searches from overwhelming LLM context window
 >   "args": ["--workspace", "/path/to/target-project"]
 > }
 > ```
-> Nagato will look for `/path/to/target-project/.nagato/functions_config.json`. If this file is missing or lacks an `"insight": {"enabled": true}` section in the target project, Insight remains disabled and the WebUI will show *"No Insight Data"*.
->
-> > **Note on Insight**: In standalone MCP Tools builds with Insight enabled, Insight is **disabled by default** until explicitly enabled in the target workspace's `.nagato/functions_config.json` via `"insight": {"enabled": true}`. When enabled, AST background synchronization runs automatically on edits (`nagato_edit`, `nagato_edit_lines`) and populates the local knowledge graph.
-
+> Nagato will look for `/path/to/target-project/.nagato/functions_config.json`.
 ---
 
 

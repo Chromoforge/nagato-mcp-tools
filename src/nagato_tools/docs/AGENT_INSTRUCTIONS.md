@@ -23,24 +23,19 @@ b) **Session-scoped via `NAGATO_SESSION_ID`**
    Undo/redo history and scratch dirs can be scoped per project via the `NAGATO_SESSION_ID`
    environment variable or `--session-id` flag (e.g. `proj:my-app`). Default if unset: `"standalone"`.
 
-c) **Two separate, unrelated persistence layers — don't conflate them:**
+c) **Persistent AST symbol database:
    - A lightweight **AST symbol database** (plain SQLite, no embeddings, no LLM involved) behind
      `nagato_read_signatures` / `nagato_extract_callers` / `nagato_extract_callees`. Built and
-     refreshed on demand with `nagato_rebuild_symbol_db`.
-   - The optional **Insight knowledge graph** — a separate SQLite store for deliberately-curated
-     architecture concepts (see the Insight section, if present). It only ships when
-     `insight.enabled: true` in `.nagato/config.yaml` **and** `sync_tools.py` was last run with
-     `--include-insight`. If tools like `nagato_concept_create` / `nagato_view_radar` are not in
-     your tool list, Insight is not part of this build — skip that section entirely and rely on
-     the symbol database and `nagato_semantic_search` instead.
+     refreshed on demand with `nagato_rebuild_symbol_db`.**
 
 d) **Flat tool surface**
    Tools are grouped by category (EDIT, READ, SEARCH, TESTING, EXECUTE,
-   INSIGHT, WEB, GIT, CREATION, DEBUGGING, SHELL, SYSTEM) for documentation purposes only —
+   WEB, GIT, CREATION, DEBUGGING, SHELL, SYSTEM) for documentation purposes only —
    there is no gating on which category may run when.
 
 
 ## Operational Protocol
+
 
 1. **Getting started:**
    Call whichever tool fits your task directly — no setup call is required first.
@@ -55,19 +50,16 @@ d) **Flat tool surface**
    | Exact symbol name, any file | `nagato_read_signatures(target_symbol=...)` (no `file_path`) | Queries the pre-built symbol DB across the whole repo — fast, no false positives from comments/strings. **PRIMARY tool for symbol lookup.** |
    | Exact symbol name + which file | `nagato_read_signatures(file_path=...)` | Same DB, scoped to one file; falls back to a live AST parse if that file isn't indexed, so it always works even on an empty DB. |
    | Partial/fuzzy symbol name, single file only | `nagato_searchAST(query, file)` | Structural AST substring match. Single-file only — for fuzzy cross-file lookup, there is no direct equivalent; narrow with `nagato_find_file` first, or use `nagato_read_signatures` with the exact name once you know it. |
-   | Who calls / is called by a symbol | `nagato_extract_callers` / `nagato_extract_callees` | Reads the same symbol DB's call table. Direct function/method calls only — no inheritance, no decorators (see Insight's `nagato_impact_analysis` for that). |
+   | Who calls / is called by a symbol | `nagato_extract_callers` / `nagato_extract_callees` | Reads the same symbol DB's call table. Direct function/method calls only — no inheritance, no decorators. |
    | A literal string, constant, error message, import, config value | `nagato_searchInFile` / `nagato_searchInFiles` | Plain case-insensitive substring match, no AST — works on any text file. NOT for symbol lookup: no structural awareness, will false-positive on comments/strings/docs. |
    | Only the filename, not its path | `nagato_find_file` | Recursive exact-filename search from a starting directory. |
    | Intent/behavior, not exact names (e.g. "where do we validate emails?") | `nagato_semantic_search` | Vector search over indexed code chunks. Self-indexes on every call (`auto_index`), so — unlike the symbol DB — it never needs a manual rebuild. |
-   | Architecture-level "why", or blast-radius across sessions | Insight tools (`nagato_view_radar`, `nagato_impact_analysis`, `nagato_unified_search`) | Heavier, deliberately-curated graph — only useful once populated. See the Insight section. |
-
    **Symbol DB staleness caveat:** the DB behind `nagato_read_signatures` (global mode), `nagato_extract_callers`,
    and `nagato_extract_callees` does **not** auto-reindex like `nagato_semantic_search` does. If a global lookup
    for a symbol you know exists comes back empty, run `nagato_rebuild_symbol_db` (optionally scoped to a `dir`)
    before concluding the symbol doesn't exist — it may just be stale or never indexed.
 
 3. **Safe Modification & Creation Loop:**
-   - **Pre-check** (only if Insight tools are available, see Insight section): before touching a critical file or shared component, run `nagato_view_radar` or `nagato_impact_analysis` to see what depends on it.
    - **Edit & Create**: Use `nagato_edit` for targeted string replacement or creating new files (auto-creates if non-existent — there is no separate `nagato_create` tool), and `nagato_edit_lines` for line-range rewrites.
    - **Directories**: Use `nagato_create_dir` for creating new directories.
    - **Syntax & Style**: Run `nagato_lint` immediately after editing — it does a hard syntax check plus a configurable Ruff pass, but only for `.py` files (no-op on everything else).

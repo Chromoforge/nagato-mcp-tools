@@ -4,7 +4,6 @@
 include README.md
 include LICENSE
 include AGENT_INSTRUCTIONS.md
-include check_release_safety.py
 include setup.py
 include pyproject.toml
 

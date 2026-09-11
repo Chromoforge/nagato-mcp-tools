@@ -177,7 +177,7 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
             "nagato_view_radar", "nagato_search_concept", "nagato_insights_search",
             "nagato_sync_ast_to_insight", "nagato_unified_search", "nagato_drift_report",
             "nagato_impact_analysis", "nagato_block_save", "nagato_block_load",
-            "nagato_block_list", "nagato_block_delete"
+            "nagato_block_list", "nagato_block_delete", "nagato_insight_promote_to_global"
         ],
         purpose="Use to build and query the architectural knowledge graph.",
         allows_state_changes=False,

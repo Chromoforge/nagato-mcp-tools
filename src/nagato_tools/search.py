@@ -12,6 +12,7 @@ from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _check_irrelevance_guard
 from nagato_tools.semanticindex import SemanticIndexSearch
 from nagato_tools.token_calculator import estimate
+from nagato_tools.insight_sync_hooks import check_radar_alert_for_file
 
 # Text file suffixes that are considered searchable
 SEARCHABLE_TEXT_SUFFIXES = frozenset({
@@ -288,7 +289,18 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
 
     result = header + ":\n" + "\n".join(results)
     notice = _check_irrelevance_guard(dir, ctx=ctx, workspace_root=workspace_root, tool_name="nagato_searchInFiles")
-    return notice + _truncate_to_token_limit(result, ctx=ctx)
+
+    alerts = []
+    seen_alert_files = set()
+    for fp in per_file_counts:
+        if fp not in seen_alert_files:
+            seen_alert_files.add(fp)
+            alert = check_radar_alert_for_file(fp, _ctx)
+            if alert:
+                alerts.append(alert)
+    alert_prefix = ("\n".join(alerts) + "\n\n") if alerts else ""
+
+    return alert_prefix + notice + _truncate_to_token_limit(result, ctx=ctx)
 
 
 async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int = 0, _ctx: Optional[Any] = None) -> str:

@@ -6,12 +6,10 @@ The Nagato Tools suite provides a dedicated, lightweight, persistent version-tra
 
 ## 1. What It Can Do
 
-The Undo system tracks file modifications, file creations, file renames, file deletions, and Insight knowledge graph / Block mutations:
+The Undo system tracks file modifications, file creations, file renames, and file deletions:
 - **Reverts modifications**: Restores previous file content after `nagato_edit` or `nagato_edit_lines`.
 - **Reverts creations**: Deletes newly created files if the creation step was undone.
 - **Reverts deletions**: Restores deleted files and their contents after `nagato_delete`.
-- **Reverts Insight Knowledge Graph writes**: Restores created/updated/deleted concepts, edges, vector embeddings, AST sync nodes, and collapsed clusters.
-- **Reverts BlockStore writes**: Restores cross-session blocks with optimistic conflict detection (`UNDO_CONFLICT`).
 - **Multi-step Undo**: Roll back $N$ steps at once.
 - **Redo Support**: Re-apply undone changes.
 - **Cross-process Persistence**: Snapshot and action journal history is written directly to disk under `.nagato/undo_cache/`, `.nagato/redo_cache/`, and `.nagato/sessions/<session_id>/action_journal/`.

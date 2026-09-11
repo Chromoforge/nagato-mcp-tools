@@ -6,6 +6,8 @@ from nagato_tools.ctx_mock import get_mock_context
 from nagato_tools import edit as edit_module
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.token_calculator import estimate
+from nagato_tools.insight_sync_hooks import trigger_insight_sync_if_needed, check_radar_alert_for_file
+
 # Database path - can be overridden for testing
 DB_PATH = None
 
@@ -224,8 +226,12 @@ async def nagato_read_file(file: str, _ctx: Optional[Any] = None) -> str:
         sync_queued = False  # Insight disabled
         sync_notice = "[INSIGHT: knowledge graph entry for this file is being (re)created in background]\n\n" if sync_queued else ""
         
+        # Proactive context injection: radar alert
+        radar_alert = check_radar_alert_for_file(file, _ctx)
+        alert_prefix = f"{radar_alert}\n\n" if radar_alert else ""
+
         notice = _check_irrelevance_guard(file, ctx=ctx, workspace_root=workspace_root, tool_name="nagato_read_file")
-        return sync_notice + notice + _truncate_to_token_limit(content, ctx=ctx)
+        return alert_prefix + sync_notice + notice + _truncate_to_token_limit(content, ctx=ctx)
     except Exception as e:
         return nagato_error(str(e), tool="nagato_read_file")
 
@@ -267,8 +273,12 @@ async def nagato_read_lines(file: str, start_line: int, end_line: int, _ctx: Opt
         sync_queued = False  # Insight disabled
         sync_notice = "[INSIGHT: knowledge graph entry for this file is being (re)created in background]\n\n" if sync_queued else ""
         
+        # Proactive context injection: radar alert
+        radar_alert = check_radar_alert_for_file(file, _ctx)
+        alert_prefix = f"{radar_alert}\n\n" if radar_alert else ""
+
         notice = _check_irrelevance_guard(file, ctx=ctx, workspace_root=workspace_root, tool_name="nagato_read_lines")
-        return sync_notice + notice + _truncate_to_token_limit("".join(selected_lines), ctx=ctx)
+        return alert_prefix + sync_notice + notice + _truncate_to_token_limit("".join(selected_lines), ctx=ctx)
     except Exception as e:
         return nagato_error(str(e), tool="nagato_read_lines")
 
@@ -421,7 +431,11 @@ def nagato_read_signatures(file_path: str = None, target_symbol: str = None, lim
                     len(paged_rows),
                 )]
                 output.extend(paged_rows)
-                return _truncate_to_token_limit("\n".join(output), ctx=ctx)
+                res_str = _truncate_to_token_limit("\n".join(output), ctx=ctx)
+                radar_alert = check_radar_alert_for_file(file_path, _ctx)
+                if radar_alert:
+                    return f"{radar_alert}\n\n{res_str}"
+                return res_str
         except Exception:
             pass # If DB fails, we use the live fallback below
             
@@ -463,7 +477,11 @@ def nagato_read_signatures(file_path: str = None, target_symbol: str = None, lim
                 len(paged_output),
             )]
             rendered.extend(paged_output)
-            return _truncate_to_token_limit("\n".join(rendered), ctx=ctx)
+            res_str = _truncate_to_token_limit("\n".join(rendered), ctx=ctx)
+            radar_alert = check_radar_alert_for_file(file_path, _ctx)
+            if radar_alert:
+                return f"{radar_alert}\n\n{res_str}"
+            return res_str
         except Exception as e:
             return nagato_error(
                 f"Error parsing live signatures: {str(e)}",
