@@ -12,8 +12,6 @@ from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _check_irrelevance_guard
 from nagato_tools.semanticindex import SemanticIndexSearch
 from nagato_tools.token_calculator import estimate
-from nagato_tools.insight_sync_hooks import check_radar_alert_for_file
-
 # Text file suffixes that are considered searchable
 SEARCHABLE_TEXT_SUFFIXES = frozenset({
     ".py", ".js", ".ts", ".txt", ".md", ".json", ".yaml", ".yml", ".html", ".css",
@@ -295,7 +293,7 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
     for fp in per_file_counts:
         if fp not in seen_alert_files:
             seen_alert_files.add(fp)
-            alert = check_radar_alert_for_file(fp, _ctx)
+            alert = None  # Insight disabled
             if alert:
                 alerts.append(alert)
     alert_prefix = ("\n".join(alerts) + "\n\n") if alerts else ""
