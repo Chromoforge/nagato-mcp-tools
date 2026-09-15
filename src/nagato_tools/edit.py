@@ -316,9 +316,9 @@ async def nagato_edit(
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
-            return f"{notice}SUCCESS: '{searchstring}' was replaced with '{replacement}' in {file}. Lint: OK.\n{msg}"
+            return f"{notice}SUCCESS: Edit applied to {file} ({len(replacement)} chars replaced). Lint: OK.\n{msg}"
         else:
-            return f"PARTIAL SUCCESS: '{searchstring}' was replaced in {file}, but LINT/SYNTAX FAILED:\n{lint_result}"
+            return f"PARTIAL SUCCESS: Edit applied to {file}, but LINT/SYNTAX FAILED:\n{lint_result}"
 
     except Exception as e:
         return nagato_error(str(e), tool="nagato_edit")
