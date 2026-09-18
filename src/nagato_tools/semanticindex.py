@@ -1,7 +1,10 @@
 import ast
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from nagato_tools.config import (
     get_ignored_dirs,
@@ -241,9 +244,14 @@ class SemanticIndexSearch:
             self.conn.enable_load_extension(True)
             sqlite_vec.load(self.conn)
             self.has_vector_support = True
-        except (ImportError, Exception):
-            # Fallback for standalone mode without sqlite-vec extension
-            pass
+            logger.debug("sqlite_vec extension loaded successfully")
+        except (ImportError, ModuleNotFoundError) as exc:
+            logger.debug("sqlite_vec extension not available: %s", exc)
+        except Exception as exc:
+            logger.warning("Failed to initialize sqlite_vec extension: %s", exc)
+            # Log more details about the error for debugging
+            import traceback
+            logger.debug(f"Detailed traceback: {traceback.format_exc()}")
 
         with self.conn:
             # Existing chunks for vector search
@@ -396,8 +404,12 @@ class SemanticIndexSearch:
 
         try:
             tree = ast.parse(source_code)
-        except SyntaxError:
+        except SyntaxError as e:
+            logger.warning(f"Syntax error in {stored_path}: {str(e)}")
             return f"Skipped: syntax error in {stored_path}"
+        except Exception as e:
+            logger.error(f"Unexpected AST parsing error in {stored_path}: {str(e)}")
+            raise  # Re-raise to ensure the error is not silently ignored
 
         # 1. Fire AST extractions for symbols and calls
         try:
@@ -407,7 +419,8 @@ class SemanticIndexSearch:
             cg_builder = CallgraphBuilder(str(abs_path))
             call_data = cg_builder.build()  # returns {"calls": ..., "called_from": ...}
         except Exception as e:
-            return f"AST analysis failed for {stored_path}: {str(e)}"
+            logger.error(f"AST analysis failed for {stored_path}: {str(e)}")
+            raise  # Re-raise to ensure the error is not silently ignored
 
         # 2. Collect logical code chunks for vector search
         chunks, metas = [], []
@@ -682,8 +695,10 @@ class SemanticIndexSearch:
                     cursor.execute("DELETE FROM global_symbols WHERE file_path = ?", (file_rel_path,))
                     cursor.execute("DELETE FROM global_calls WHERE file_path = ?", (file_rel_path,))
                     cursor.execute("DELETE FROM indexed_file_meta WHERE file_path = ?", (file_rel_path,))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to delete existing data for file {file_path}: {str(e)}")
+                    # Re-raise to ensure the error is not silently ignored
+                    raise
 
         indexed_count = 0
         error_count = 0
@@ -698,7 +713,8 @@ class SemanticIndexSearch:
                     indexed_count += 1
                 else:
                     error_count += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"Failed to process file {file_path}: {str(e)}")
                 error_count += 1
 
         return f"SUCCESS: symbol database re-indexed. {indexed_count} files processed successfully, {error_count} errors."
