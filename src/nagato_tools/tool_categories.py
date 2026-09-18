@@ -174,10 +174,13 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
         group=CategoryGroup.INSIGHT,
         example_tools=[
             "nagato_concept_create", "nagato_concept_link", "nagato_concept_collapse",
-            "nagato_view_radar", "nagato_search_concept", "nagato_insights_search",
-            "nagato_sync_ast_to_insight", "nagato_unified_search", "nagato_drift_report",
-            "nagato_impact_analysis", "nagato_block_save", "nagato_block_load",
-            "nagato_block_list", "nagato_block_delete", "nagato_insight_promote_to_global"
+            "nagato_concept_expand", "nagato_view_radar", "nagato_search_concept",
+            "nagato_insights_search", "nagato_sync_ast_to_insight", "nagato_unified_search",
+            "nagato_drift_report", "nagato_impact_analysis", "nagato_block_save",
+            "nagato_block_load", "nagato_block_list", "nagato_block_delete",
+            "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm",
+            "nagato_register_protocol", "nagato_link_implementation", "nagato_query_imports",
+            "nagato_query_deletion_history", "nagato_query_algorithm_implementations",
         ],
         purpose="Use to build and query the architectural knowledge graph.",
         allows_state_changes=False,
