@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 DEFAULT_IGNORED_DIRS = (
     ".venv", "venv", "env", ".git", "__pycache__", ".pytest_cache",
     ".egg-info", "rpgproxy.egg-info", "dist", "build",
+    "playbooks_poc", "playbooks_challenge",
 )
 
 
