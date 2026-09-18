@@ -25,10 +25,166 @@ Why this lives here (not in pipeline.py):
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+
+# Rollback reason categories for better error handling
+class RollbackReason:
+    """Categorized rollback reasons for intelligent retry logic."""
+    NO_EVENT_LOOP = "no_event_loop"
+    INSIGHT_DISABLED = "insight_disabled"
+    FORCE_INSIGHT_DISABLED = "force_insight_disabled"
+    TOOL_NOT_FORCED = "tool_not_forced"
+    SYNC_QUEUED_SUCCESS = "sync_queued_success"
+    CONTEXT_MISSING = "context_missing"
+    STANDALONE_UNDO_MISSING = "standalone_undo_missing"
+    STANDALONE_SNAPSHOT_MISSING = "standalone_snapshot_missing"
+    JOURNAL_REVERT_FAILED = "journal_revert_failed"
+    UNKNOWN = "unknown"
+
+# Track failed operations to prevent retry loops
+_failed_operations: Dict[str, Dict[str, Any]] = {}
+_MAX_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_BASE = 2.0  # seconds
+
+
+def _get_operation_key(file: str, tool_name: str) -> str:
+    """Generate a unique key for tracking operation state."""
+    return f"{tool_name}:{file}"
+
+
+def _record_failed_operation(file: str, tool_name: str, reason: str) -> int:
+    """Record a failed operation and return the attempt count."""
+    key = _get_operation_key(file, tool_name)
+    now = time.time()
+    
+    if key not in _failed_operations:
+        _failed_operations[key] = {
+            "attempts": 0,
+            "first_failure": now,
+            "last_failure": now,
+            "reasons": []
+        }
+    
+    op = _failed_operations[key]
+    op["attempts"] += 1
+    op["last_failure"] = now
+    op["reasons"].append(reason)
+    
+    # Clean up old entries (older than 1 hour)
+    cutoff = now - 3600
+    keys_to_remove = [k for k, v in _failed_operations.items() if v["last_failure"] < cutoff]
+    for k in keys_to_remove:
+        del _failed_operations[k]
+    
+    return op["attempts"]
+
+
+def _should_retry_operation(file: str, tool_name: str, reason: str) -> bool:
+    """Determine if an operation should be retried based on failure history and reason."""
+    key = _get_operation_key(file, tool_name)
+    
+    if key not in _failed_operations:
+        return True
+    
+    op = _failed_operations[key]
+    
+    # Don't retry if max attempts reached
+    if op["attempts"] >= _MAX_RETRY_ATTEMPTS:
+        return False
+    
+    # Don't retry permanent failures
+    permanent_reasons = {
+        RollbackReason.INSIGHT_DISABLED,
+        RollbackReason.FORCE_INSIGHT_DISABLED,
+        RollbackReason.TOOL_NOT_FORCED,
+        RollbackReason.CONTEXT_MISSING,
+    }
+    if reason in permanent_reasons:
+        return False
+    
+    # For transient failures, check if enough time has passed (exponential backoff)
+    # Only apply backoff on subsequent attempts (attempts > 1)
+    if reason in {RollbackReason.NO_EVENT_LOOP, RollbackReason.STANDALONE_UNDO_MISSING}:
+        if op["attempts"] > 1:
+            min_wait = _RETRY_BACKOFF_BASE ** (op["attempts"] - 1)
+            if time.time() - op["last_failure"] < min_wait:
+                return False
+    
+    return True
+
+
+def _get_retry_guidance(reason: str, attempt: int) -> str:
+    """Get user-friendly guidance for retrying after a rollback."""
+    guidance = {
+        RollbackReason.NO_EVENT_LOOP: (
+            f"Attempt {attempt}/{_MAX_RETRY_ATTEMPTS}: No async event loop was running. "
+            f"Ensure you're running in an async context or start an event loop. "
+            f"Wait {_RETRY_BACKOFF_BASE ** attempt:.0f}s before retrying."
+        ),
+        RollbackReason.INSIGHT_DISABLED: (
+            "Insight is disabled in configuration (.nagato/config.yaml: insight.enabled=false). "
+            "Enable Insight or disable force_insight (handoff.bForceInsight=false) to allow edits without sync."
+        ),
+        RollbackReason.FORCE_INSIGHT_DISABLED: (
+            "Force insight gating is disabled (handoff.bForceInsight=false). "
+            "This should not cause rollbacks - check configuration."
+        ),
+        RollbackReason.TOOL_NOT_FORCED: (
+            f"The tool is not in the forced_insight_tools list. "
+            f"Add it to handoff.forced_insight_tools in config or disable bForceInsight."
+        ),
+        RollbackReason.STANDALONE_UNDO_MISSING: (
+            f"Attempt {attempt}/{_MAX_RETRY_ATTEMPTS}: Standalone undo directory or snapshots missing. "
+            f"This may indicate a context initialization issue. Wait {_RETRY_BACKOFF_BASE ** attempt:.0f}s before retrying."
+        ),
+        RollbackReason.STANDALONE_SNAPSHOT_MISSING: (
+            "No snapshot found for rollback. The edit may have been applied outside the tracking system."
+        ),
+        RollbackReason.JOURNAL_REVERT_FAILED: (
+            "Journal-based revert failed. Check FSM undo service availability."
+        ),
+    }
+    return guidance.get(reason, f"Unknown rollback reason: {reason}. Check logs for details.")
+
+
+def _categorize_sync_failure(ctx: Any) -> str:
+    """Categorize why insight sync was not queued."""
+    # Check if there's an event loop
+    try:
+        import asyncio
+        asyncio.get_running_loop()
+        has_event_loop = True
+    except RuntimeError:
+        has_event_loop = False
+    
+    if not has_event_loop:
+        return RollbackReason.NO_EVENT_LOOP
+    
+    # Check if insight is enabled
+    try:
+        from nagato_tools.config import get_insight_config
+        if not get_insight_config().get("enabled", False):
+            return RollbackReason.INSIGHT_DISABLED
+    except Exception:
+        return RollbackReason.INSIGHT_DISABLED
+    
+    # Check if force insight is enabled
+    try:
+        try:
+            from fsm import config as config_module  # host-only
+        except (ImportError, Exception):
+            config_module = None  # type: ignore[misc]  # fsm-only; standalone gets None
+        is_force_fn = getattr(config_module, "is_force_insight_enabled", lambda: False)
+        if not is_force_fn():
+            return RollbackReason.FORCE_INSIGHT_DISABLED
+    except Exception:
+        return RollbackReason.FORCE_INSIGHT_DISABLED
+    
+    return RollbackReason.UNKNOWN
 
 
 def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str, Any]:
@@ -46,16 +202,19 @@ def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str,
       by MockFSMContext.track_edit_for_undo for this file
 
     Returns:
-        {"rolled_back": bool, "reason": str, "file": str}
+        {"rolled_back": bool, "reason": str, "file": str, "can_retry": bool, "guidance": str}
         Never raises.
     """
-    out = {"rolled_back": False, "reason": "n/a", "file": file}
+    out = {"rolled_back": False, "reason": "n/a", "file": file, "can_retry": False, "guidance": ""}
 
     if ctx is None:
+        out["reason"] = RollbackReason.CONTEXT_MISSING
+        out["guidance"] = _get_retry_guidance(out["reason"], 0)
         return out
 
     sync_queued = getattr(ctx, "_last_insight_sync_queued", None)
     if sync_queued is not False:
+        out["reason"] = RollbackReason.SYNC_QUEUED_SUCCESS
         return out  # Sync either succeeded or wasn't attempted
 
     try:
@@ -67,6 +226,8 @@ def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str,
         try:
             from nagato_tools import config as config_module  # type: ignore[no-redef]
         except ImportError:
+            out["reason"] = RollbackReason.UNKNOWN
+            out["guidance"] = _get_retry_guidance(out["reason"], 0)
             return out
 
     # Insight must be globally enabled — otherwise sync_queued=False is the
@@ -80,18 +241,27 @@ def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str,
     except Exception:
         insight_cfg = {}
     if not insight_cfg.get("enabled", False):
+        out["reason"] = RollbackReason.INSIGHT_DISABLED
+        out["guidance"] = _get_retry_guidance(out["reason"], 0)
         return out
 
     is_force_fn = getattr(config_module, "is_force_insight_enabled", lambda: False)
     if not is_force_fn():
+        out["reason"] = RollbackReason.FORCE_INSIGHT_DISABLED
+        out["guidance"] = _get_retry_guidance(out["reason"], 0)
         return out
     is_trigger_fn = getattr(config_module, "is_forced_insight_trigger", lambda _t: False)
     if not is_trigger_fn(tool_name):
+        out["reason"] = RollbackReason.TOOL_NOT_FORCED
+        out["guidance"] = _get_retry_guidance(out["reason"], 0)
         return out
+
+    # Categorize the sync failure for better error reporting
+    sync_failure_reason = _categorize_sync_failure(ctx)
 
     # Detect context type: MockFSMContext has undo_enabled=False (or None).
     # NagatoFSMContext / FSM test contexts have undo_enabled=True or ctx.FSM set.
-    is_fsm_ctx = bool(getattr(ctx, "undo_enabled", False)) or bool(getattr(ctx, "FSM", None)) or (type(ctx).__name__ == "NagatoFSMContext")
+    is_fsm_ctx = bool(getattr(ctx, "undo_enabled", False)) or bool(getattr(ctx, "FSM", None)) or (type(ctx).__name__ in ("NagatoFSMContext", "FSMContext"))
 
     if is_fsm_ctx:
         rollback = _rollback_via_journal(file, ctx)
@@ -101,6 +271,12 @@ def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str,
     out.update(rollback)
 
     if out["rolled_back"]:
+        # Record the failure for loop prevention
+        attempt = _record_failed_operation(file, tool_name, sync_failure_reason)
+        out["reason"] = sync_failure_reason
+        out["can_retry"] = _should_retry_operation(file, tool_name, sync_failure_reason)
+        out["guidance"] = _get_retry_guidance(sync_failure_reason, attempt)
+        
         try:
             ctx._last_insight_sync_rolled_back = True
         except Exception:
@@ -116,8 +292,8 @@ def _maybe_rollback_after_edit(file: str, ctx: Any, tool_name: str) -> Dict[str,
 
         logger.warning(
             "Auto-rollback: %s on %s succeeded on disk but Insight sync returned False. "
-            "Reason: %s. File has been restored to pre-edit state.",
-            tool_name, file, out["reason"],
+            "Reason: %s. File has been restored to pre-edit state. Can retry: %s. Guidance: %s",
+            tool_name, file, out["reason"], out["can_retry"], out["guidance"],
         )
 
         # NOTE: LastErrors + telemetry emission are intentionally NOT done here.

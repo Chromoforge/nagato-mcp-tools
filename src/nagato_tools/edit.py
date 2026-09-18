@@ -50,9 +50,9 @@ def _check_post_edit(file: str, _ctx: Any, tool_name: str) -> Optional[str]:
     """Run _maybe_rollback_after_edit; if it rolled back, return a clear message.
 
     Returns None on the happy path (caller proceeds normally).
-    Returns a "PARTIAL SUCCESS (auto-rolled back): ..." string the caller should
-    forward to the LLM so the failure mode is visible — instead of silently
-    reporting SUCCESS for an edit that will be invisible to the Insight graph.
+    Returns a clear error message the caller should forward to the LLM so the
+    failure mode is visible — instead of silently reporting SUCCESS for an edit
+    that was reverted.
     """
     try:
         result = _maybe_rollback_after_edit(file, _ctx, tool_name)
@@ -60,11 +60,25 @@ def _check_post_edit(file: str, _ctx: Any, tool_name: str) -> Optional[str]:
         return None
     if not result.get("rolled_back"):
         return None
-    return (
-        f"PARTIAL SUCCESS (auto-rolled back): edit to {file} was reverted "
-        f"because Insight sync did not complete. Reason: {result.get('reason', 'unknown')}. "
-        f"Retry the edit after ensuring Insight is enabled and an event loop is running."
-    )
+    
+    reason = result.get("reason", "unknown")
+    can_retry = result.get("can_retry", False)
+    guidance = result.get("guidance", "")
+    
+    if can_retry:
+        return (
+            f"EDIT ROLLED BACK: Edit to {file} was reverted because Insight synchronization failed. "
+            f"Reason: {reason}. "
+            f"RETRY GUIDANCE: {guidance} "
+            f"The edit was NOT applied. You may retry after addressing the issue."
+        )
+    else:
+        return (
+            f"EDIT FAILED (PERMANENT): Edit to {file} was reverted and should NOT be retried. "
+            f"Reason: {reason}. "
+            f"GUIDANCE: {guidance} "
+            f"The edit was NOT applied. Fix the underlying configuration issue before attempting again."
+        )
 
 
 def _ensure_parent_dirs(target_file: Path) -> None:
@@ -152,19 +166,6 @@ async def nagato_edit(
         replacement: Replacement text written back to disk.
                      For NEW files, this becomes the entire file content.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
-
-    Notes:
-        The edit tracks the file for undo support, updates the symbol index,
-        snapshots the post-edit state for revert support, and then runs lint/syntax
-        validation. For MCP callers, JSON in `target` is the safest way to pass
-        text containing spaces or newlines.
-
-        Atomicity (Insight-graph + on-disk file):
-        If force-insight is enabled AND this tool is in `forced_insight_tools`,
-        AND the follow-up Insight sync returns `sync_queued=False`, the engine
-        auto-rolls back the file change to preserve file+Insight atomicity.
-        The return value in that case is "PARTIAL SUCCESS (auto-rolled back): ..."
-        instead of "SUCCESS: ...". See fsm/functions_internal/_post_edit_safety.py.
     """
     target_file = _get_workspace_root(_ctx) / file
 
@@ -342,13 +343,6 @@ async def nagato_edit_lines(
         new_code: Multi-line replacement text. An empty string deletes the range.
                   For NEW files (auto-create), this becomes the entire file content.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
-
-    Notes:
-        The file is read preserving original line endings (CRLF/LF) and written back
-        with the same line endings. The edit also updates session dirty tracking,
-        records a post-edit snapshot, refreshes the symbol index, and runs
-        lint/syntax validation. For MCP callers, JSON in `target` is recommended
-        for multiline `new_code` payloads.
         
         For NEW files (auto-create): Must use start_line=1 and end_line=0 (or end_line < start_line).
         The new_code becomes the complete file content.
@@ -584,12 +578,6 @@ async def nagato_delete(
     Args:
         file: Relative path to the file from the workspace root.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
-
-    Notes:
-        - The file must exist (no silent no-op).
-        - Marks the file dirty in the active session for ledger tracking.
-        - Tracks as existing file (is_new: False) so restore_from_ledger can recover it (null-to-restore).
-        - Returns success message with file path and size deleted.
     """
     target_file = _get_workspace_root(_ctx) / file
 
@@ -660,15 +648,6 @@ async def nagato_rename(
         destination: Relative path to the destination file from the workspace root.
         overwrite: If True, overwrite destination if it exists. Default: False.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
-
-    Notes:
-        - The source file must exist.
-        - Destination must not exist unless overwrite=True.
-        - Both source and destination must be within workspace root.
-        - Uses atomic os.replace() on same filesystem; falls back to shutil.move() for cross-filesystem.
-        - Marks both source and destination dirty in the active session for ledger tracking.
-        - Tracks both as existing files (is_new: False) so restore_from_ledger can recover them.
-        - Returns success message with source path, destination path, and size.
     """
     source_file = _get_workspace_root(_ctx) / source
     dest_file = _get_workspace_root(_ctx) / destination
@@ -760,11 +739,6 @@ async def nagato_create_dir(
         parents: If True, create missing parent directories as needed. Default: True.
         exist_ok: If True, do not raise an error if directory already exists. Default: True.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
-
-    Notes:
-        - Prevents path traversal outside workspace root.
-        - Creates parent directories atomically when parents=True.
-        - Returns success message indicating whether the directory was created or already existed.
     """
     workspace_root = _get_workspace_root(_ctx)
     target_dir = workspace_root / dir
