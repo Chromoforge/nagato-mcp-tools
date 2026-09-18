@@ -36,6 +36,19 @@ d) **Flat tool surface**
 
 ## Operational Protocol
 
+### 0. 🛑 CRITICAL RULES: ANTI-LAZY PROTOCOL 🛑
+**DO NOT USE `nagato_read_file` OR `nagato_read_lines` FOR CODE EXPLORATION.** 
+Blindly reading entire files to search for functions, classes, or logic is a severe anti-pattern that destroys the context window and leads to task failure.
+
+*   **FORBIDDEN:** Do NOT guess file paths. Do NOT read a file just to "see what's in it" or to locate a symbol.
+*   **MANDATORY:** You MUST use the specialized index tools to navigate the codebase:
+    *   Looking for a specific function/class? **Use `nagato_read_signatures`**.
+    *   Need to find where a symbol is used? **Use `nagato_extract_callers`**.
+    *   Looking for fuzzy logic or intent (e.g., "auth handling")? **Use `nagato_semantic_search`**.
+*   **SOLE EXCEPTION:** You may ONLY use `nagato_read_file` if you already know the exact path AND you are reading a non-AST compatible config/text file (e.g., `.yaml`, `.json`, `.md`), or if another tool explicitly instructed you to read the raw source of a specific file.
+
+Violation of this strict routing will result in immediate context bloat. You are a specialized agent; act like one and use the specialized tools.
+
 
 1. **Getting started:**
    Call whichever tool fits your task directly — no setup call is required first.
@@ -84,6 +97,62 @@ d) **Flat tool surface**
   - `mode="redo"`, `value=N` — redo N previously-undone operations.
   - There is **no** `mode="time"` or `mode="command"` — only `"step"` and `"redo"` are supported; passing anything other than `"redo"` is silently treated as `"step"`.
 - For regressions this tool can't reach (changes made outside these tools, or you need to inspect history first), use `nagato_git` directly: `status`/`diff`/`log` to inspect, `revert`/`checkout_file`/`reset_file` to act.
+
+## Calling Tools — Concrete Syntax
+
+Every standalone tool is called directly by its full name. There is no wrapper entry-point; each `nagato_*` tool is an independent MCP tool.
+
+### Mandatory pattern (every call)
+```
+Call: <tool_name>(param1="value", param2="value", ...)
+```
+Always invoke the tool directly in the same turn. Never describe, narrate, or simulate a call in prose without the actual invocation.
+
+### Common invocation examples
+```
+# Read / search
+nagato_read_signatures(target_symbol="...")
+nagato_searchInFiles(query="...", path="...")
+nagato_find_file(filename="...")
+
+# Edit / create
+nagato_edit(file_path="...", old_string="...", new_string="...")
+nagato_edit_lines(file="...", start_line=1, end_line=10, new_code="...")
+nagato_create_dir(dir_path="...")
+
+# Test / verify
+nagato_run_test(test_node_id="...")
+nagato_run_configured_suite()
+
+# Undo / rollback
+nagato_undo_standalone(mode="step", value=1)
+
+# Shell / execute
+nagato_shell(command="...", timeout=5)
+nagato_execute_snippet(code="...", timeout=30)
+
+# Web / search
+nagato_web_search(query="...")
+
+# System / info
+nagato_is_agent_running()
+```
+
+### Critical rules
+1. **Always invoke directly.** Never write "I will call X" or "Calling X..." without the actual `nagato_*` invocation.
+2. **Always include required parameters.** Check the tool's docstring for mandatory args (e.g. `file_path`, `target_symbol`).
+3. **No JSON wrapper needed.** Unlike the FSM entry-point (`fsm_advance`), standalone tools take their parameters directly — not inside a `target` JSON object.
+4. **No `session_id` required.** Standalone mode is stateless per call; `NAGATO_SESSION_ID` is optional for undo scoping only.
+
+
+## Error Recovery & Undo
+
+- **`nagato_undo_standalone`**: persistent undo/redo over every edit/create/delete this tool made, tracked as a **single global chronological stack** — not scoped per file.
+  - `mode="step"` (default), `value=N` — undo the last N operations, most recent first, regardless of which file each one touched.
+  - `mode="redo"`, `value=N` — redo N previously-undone operations.
+  - There is **no** `mode="time"` or `mode="command"` — only `"step"` and `"redo"` are supported; passing anything other than `"redo"` is silently treated as `"step"`.
+- For regressions this tool can't reach (changes made outside these tools, or you need to inspect history first), use `nagato_git` directly: `status`/`diff`/`log` to inspect, `revert`/`checkout_file`/`reset_file` to act.
+
 
 ## Coding Guidelines
 
