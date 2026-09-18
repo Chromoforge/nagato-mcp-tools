@@ -1,4 +1,5 @@
 import ast
+import hashlib
 from pathlib import Path
 
 
@@ -31,8 +32,8 @@ class SignatureExtractor(ast.NodeVisitor):
             List of signature dictionaries with symbol name, kind, args, return,
             decorators, and docstring (first line).
         """
-        source = Path(self.file_path).read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(source)
+        self.source = Path(self.file_path).read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(self.source)
         self.visit(tree)
         return self.signatures
 
@@ -87,6 +88,9 @@ class SignatureExtractor(ast.NodeVisitor):
         parent = self.scope_stack[-1] if self.scope_stack else ""
         qualname = ".".join(self.scope_stack + [node.name])
 
+        segment = ast.get_source_segment(self.source, node)
+        content_hash = hashlib.sha256(segment.encode("utf-8")).hexdigest() if segment else ""
+
         sig = {
             "symbol": node.name,
             "qualname": qualname,
@@ -98,6 +102,7 @@ class SignatureExtractor(ast.NodeVisitor):
             "returns": self._extract_return(node) if kind != "class" else None,
             "decorators": [self._expr_to_str(d) for d in getattr(node, "decorator_list", [])],
             "doc": self._extract_doc(node),
+            "content_hash": content_hash,
         }
         self.signatures.append(sig)
 
