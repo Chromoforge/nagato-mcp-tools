@@ -47,6 +47,29 @@ class UndoConflictError(RuntimeError):
 # Value serialization helpers for SQLite (JSON-safe, BLOB & Vector tagged)
 # ---------------------------------------------------------------------------
 
+def _safe_replace_file(src: Path, dst: Path, retries: int = 5, delay: float = 0.05) -> None:
+    """Atomically replace dst with src, with retries on Windows WinError 5/32."""
+    for attempt in range(retries):
+        try:
+            src.replace(dst)
+            return
+        except (PermissionError, OSError) as exc:
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))
+            else:
+                # Last resort fallback if atomic replace is locked
+                try:
+                    if dst.exists():
+                        try:
+                            dst.unlink()
+                        except Exception:
+                            pass
+                    src.replace(dst)
+                    return
+                except Exception:
+                    raise exc
+
+
 def _encode_sqlite_value(val: Any) -> Any:
     """Encode an SQLite column value for JSON serialization."""
     if val is None:
@@ -562,6 +585,8 @@ class ActionContext:
         self.journal = journal
         self.manifest = manifest
         self._is_finished = False
+        self._effects_since_last_flush = 0
+        self._last_flush_time = time.monotonic()
 
     @property
     def action_id(self) -> str:
@@ -575,8 +600,18 @@ class ActionContext:
         if self._is_finished:
             raise RuntimeError("Cannot add effect to finished action context.")
         self.manifest.effects.append(effect)
-        # Flush intermediate manifest to disk
-        self.journal._write_manifest(self.manifest)
+        self._effects_since_last_flush += 1
+
+        # FileEffect and FsmStateEffect represent critical filesystem / workflow state mutations,
+        # so write immediately to protect against crash recovery.
+        # High-frequency row-level mutations (SqliteRowEffect) are throttled to prevent Windows
+        # file-thrashing and sharing-violation / permission errors (WinError 5 / 32).
+        is_row_effect = getattr(effect, "effect_type", None) == EffectType.SQLITE_ROW.value
+        now = time.monotonic()
+        if not is_row_effect or self._effects_since_last_flush >= 25 or (now - self._last_flush_time) >= 1.0:
+            self.journal._write_manifest(self.manifest)
+            self._effects_since_last_flush = 0
+            self._last_flush_time = now
 
     def record_file_change(
         self,
@@ -701,7 +736,7 @@ class ActionJournal:
             data["checkpoints"] = checkpoints
         temp_file = self._pointer_file.with_suffix(".tmp")
         temp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temp_file.replace(self._pointer_file)
+        _safe_replace_file(temp_file, self._pointer_file)
 
     def _step_dir(self, step_id: int) -> Path:
         d = self._steps_dir / str(step_id)
@@ -715,7 +750,7 @@ class ActionJournal:
         path = self._manifest_path(manifest.step_id)
         temp_path = path.with_suffix(".tmp")
         temp_path.write_text(json.dumps(manifest.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-        temp_path.replace(path)
+        _safe_replace_file(temp_path, path)
 
     def load_manifest(self, step_id: int) -> Optional[ActionManifest]:
         path = self._manifest_path(step_id)
