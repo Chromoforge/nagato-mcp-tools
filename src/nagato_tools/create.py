@@ -11,10 +11,7 @@ async def nagato_generate_uuid4(
 ) -> str:
     """
     Generate one or more UUID4 values.
-    
-    This is essential for session initialization — every session requires
-    a UUID4 session_id for session bootstrap.
-    
+
     Args:
         count: Number of UUID4 values to generate (default: 1)
         no_hyphens: If True, output UUIDs without hyphens

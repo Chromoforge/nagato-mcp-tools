@@ -47,7 +47,12 @@ def validate_content_syntax(content: str, file_path: str = "") -> str | None:
 
 
 async def nagato_lint(file: str, _ctx=None) -> str:
-    """Runs a token-efficient syntax check and a configurable Ruff linter."""
+    """Runs a token-efficient syntax check and a configurable Ruff linter.
+
+    Args:
+        file: Relative path to the file from the workspace root.
+        _ctx: Optional session context (injected by facade).
+    """
     workspace_root = get_workspace_root()
     target_file = workspace_root / file
 

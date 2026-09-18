@@ -27,7 +27,7 @@ def _resolve_python_executable(workspace_root: Optional[Path] = None) -> str:
     return sys.executable
 
 
-DEFAULT_TIMEOUT_SECONDS = 30  # Allow reasonable execution time for imports and test snippets
+DEFAULT_TIMEOUT_SECONDS = 180  # Allow reasonable execution time for imports and test snippets
 
 
 async def nagato_execute_snippet(code: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS, _ctx=None) -> str:
@@ -39,11 +39,11 @@ async def nagato_execute_snippet(code: str, timeout_seconds: int = DEFAULT_TIMEO
     running a local script — do not point this tool at untrusted prompts.
 
     Args:
-        code (str): Python code snippet to execute (required)
-        timeout_seconds (int): Maximum execution time in seconds (default: 30)
+        code: Python code snippet to execute (required)
+        timeout_seconds: Maximum execution time in seconds (default: 90)
         _ctx: Optional session context (injected by facade)
     Returns:
-        str: Execution result (STDOUT, STDERR, exit code, or error)
+        Execution result (STDOUT, STDERR, exit code, or error)
     """
     if not code or not isinstance(code, str):
         return nagato_error("code must be a non-empty string", tool="nagato_execute_snippet")

@@ -1,17 +1,12 @@
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
 from nagato_tools.config import get_workspace_root
-try:
-    from fsm.events import Event  # host-only
-except (ImportError, Exception):
-    Event = None  # type: ignore[misc]  # fsm-only; standalone gets None
 from nagato_tools.errors import _nagato_error as nagato_error
-try:
-    from fsm.transition_apply import apply_event  # host-only
-except (ImportError, Exception):
-    apply_event = None  # type: ignore[misc]  # fsm-only; standalone gets None
+
+
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
     """Get workspace root from context or fall back to config."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
@@ -26,12 +21,12 @@ async def nagato_git(command: str, args: str = "", _ctx: Optional[Any] = None) -
     Args:
         command: One of: log | status | diff | revert | checkout_file | reset_file
         args:
-          log           → Number of commits (default: 15), e.g., "20"
-          status        → (empty)
-          diff          → e.g., "HEAD~3" or "HEAD~1..HEAD"
-          revert        → Commit hash, e.g., "a1b2c3d" (--no-edit, no auto-commit)
-          checkout_file → "<commit> -- <path>", e.g., "HEAD~2 -- StateEngine/DiTE/TitanStateEngine.py"
-          reset_file    → "<path>" (git checkout HEAD -- <path>, discards local changes)
+          log: Number of commits (default: 15), e.g., "20"
+          status: (empty)
+          diff: e.g., "HEAD~3" or "HEAD~1..HEAD"
+          revert: Commit hash, e.g., "a1b2c3d" (--no-edit, no auto-commit)
+          checkout_file: "<commit> -- <path>", e.g., "HEAD~2 -- StateEngine/DiTE/TitanStateEngine.py"
+          reset_file: "<path>" (git checkout HEAD -- <path>, discards local changes)
     """
     def _run(git_args: list[str]) -> str:
         workspace_root = _get_workspace_root(_ctx)
@@ -121,6 +116,7 @@ async def nagato_git(command: str, args: str = "", _ctx: Optional[Any] = None) -
 async def nagato_upload(commit_message: str, _ctx: Optional[Any] = None) -> str:
     """
     Executes git add -A + git commit — when allowed in standalone mode.
+
     Args:
         commit_message: The commit message.
         _ctx: Optional session context (injected by facade).

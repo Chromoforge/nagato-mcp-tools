@@ -110,8 +110,10 @@ async def nagato_web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS, 
     """
     Searches the public web and returns a small, source-preserving result set.
 
-    This is retrieval only: results are external, may be incomplete, and must
-    be checked against their linked sources before being treated as evidence.
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return (default: 5).
+        _ctx: Optional session context (injected by facade).
     """
     ctx = _get_context(_ctx)
     normalized_query = query.strip()
