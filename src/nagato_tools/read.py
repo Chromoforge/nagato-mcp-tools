@@ -333,10 +333,9 @@ def _get_db_path(ctx: Optional[Any] = None) -> str:
 
 def nagato_read_signatures(file_path: str = None, target_symbol: str = None, limit: int = 20, start_offset: int = 0, _ctx: Optional[Any] = None) -> str:
     """
-    PRIMARY TOOL for symbol lookup. Two modes:
-    1. GLOBAL (cross-file): omit file_path, provide target_symbol — searches the entire indexed codebase via DB. Fast, no false positives from comments or strings. Use this instead of regex when looking for a symbol by name across multiple files.
+    Primary tool for symbol lookup. Two modes:
+    1. GLOBAL (cross-file): omit file_path, provide target_symbol — searches the entire indexed codebase via DB.
     2. LOCAL (single-file): provide file_path — returns all signatures in that file, optionally filtered by target_symbol.
-    PREFER this over nagato_searchInFiles or regex for any symbol/function/class lookup task.
     Args:
         file_path: Optional. Relative path to a specific file. Omit for project-wide search.
         target_symbol: Optional. Exact symbol name to look up. Required for global mode.
@@ -495,6 +494,12 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
     Returns a list of all functions/methods called by the target symbol.
     If no file_path is provided, the relational global call table is queried.
     Results are paged via limit/start_offset to avoid flooding the context.
+    Args:
+        symbol: The symbol name to find callees for.
+        file_path: Optional. Relative path to a specific file for local scope.
+        limit: Maximum number of results to return (default: 20).
+        start_offset: Optional zero-based offset into the result list.
+        _ctx: Optional session context (injected by facade).
     """
     ctx = _get_context(_ctx)
     start_offset, limit = _normalize_window(start_offset, limit)
@@ -517,7 +522,7 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
         conn.close()
         
         if not rows:
-            return f"[NFSM INFO] Symbol '{symbol}' does not call any other symbols globally, or is not indexed."
+            return f"[NAGATO_BOOT INFO] Symbol '{symbol}' does not call any other symbols globally, or is not indexed."
 
         normalized_rows = sorted(set(rows))
         paged_rows, total_rows = _paginate_items(normalized_rows, start_offset, limit)
@@ -544,7 +549,7 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
                 graph = builder.build()
                 callees = graph["calls"].get(symbol, [])
                 if not callees:
-                    return f"[NFSM INFO] Symbol '{symbol}' does not call anything in {file_path}."
+                    return f"[NAGATO_BOOT INFO] Symbol '{symbol}' does not call anything in {file_path}."
                 normalized_callees = sorted(set(callees))
                 paged_callees, total_rows = _paginate_items(normalized_callees, start_offset, limit)
                 if not paged_callees:
@@ -571,6 +576,12 @@ def nagato_extract_callers(symbol: str, file_path: str = None, limit: int = 20, 
     Finds all symbols that call the target symbol.
     If no file_path is provided, the entire project is scanned (Global Called-From).
     Results are paged via limit/start_offset to avoid flooding the context.
+    Args:
+        symbol: The symbol name to find callers for.
+        file_path: Optional. Relative path to a specific file for local scope.
+        limit: Maximum number of results to return (default: 20).
+        start_offset: Optional zero-based offset into the result list.
+        _ctx: Optional session context (injected by facade).
     """
     ctx = _get_context(_ctx)
     start_offset, limit = _normalize_window(start_offset, limit)
@@ -595,7 +606,7 @@ def nagato_extract_callers(symbol: str, file_path: str = None, limit: int = 20, 
         conn.close()
         
         if not rows:
-            return f"[NFSM INFO] No callers found for '{symbol}' in the selected scope."
+            return f"[NAGATO_BOOT INFO] No callers found for '{symbol}' in the selected scope."
 
         normalized_rows = sorted(set(rows))
         paged_rows, total_rows = _paginate_items(normalized_rows, start_offset, limit)

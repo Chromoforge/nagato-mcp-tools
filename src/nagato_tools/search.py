@@ -177,9 +177,6 @@ async def nagato_searchInFile(query: str, file: str, max_results: int = 5, start
     """
     Performs a simple full-text search within a specific source file.
     This is a PLAIN SUBSTRING match — no regex, no wildcards.
-    WHEN TO USE: searching for literal strings, variable values, import names, or specific text in comments/docstrings.
-    WHEN NOT TO USE: searching for functions, classes, or variables by name — use nagato_searchAST instead.
-    DO NOT simulate regex by calling this multiple times with partial patterns — use nagato_searchAST for pattern-like symbol lookups.
     Args:
         query: Literal search term (case-insensitive, substring match). NOT a regex pattern.
         file: Relative path to the file from the workspace root.
@@ -228,9 +225,6 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
     """
     Performs a simple full-text search across project text files in a directory.
     This is a PLAIN SUBSTRING match — no regex, no wildcards.
-    WHEN TO USE: searching for a literal string that may appear across multiple files (e.g. a constant name, an import, a specific error message).
-    WHEN NOT TO USE: searching for functions, classes, or variables by name — use nagato_searchAST instead.
-    DO NOT use this as a substitute for regex pattern matching across files — that approach is error-prone and slow.
     Args:
         query: Literal search term (case-insensitive, substring match). NOT a regex pattern.
         dir: Relative path to the directory from the workspace root.
@@ -304,8 +298,6 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
 async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int = 0, _ctx: Optional[Any] = None) -> str:
     """
     Performs semantic vector search across the indexed code chunks.
-    WHEN TO USE: searching by intent, behavior, or natural-language description when literal text or exact symbol names are unknown.
-    WHEN NOT TO USE: searching for exact strings or known symbol names — use nagato_searchInFile or nagato_searchAST instead.
     Args:
         query: Natural-language or code-intent query for semantic retrieval.
         limit: Maximum number of results to display in this page (default: 3).
@@ -339,7 +331,6 @@ async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int =
 async def nagato_find_file(filename: str, dir: str = ".", _ctx: Optional[Any] = None) -> str:
     """
     Recursively searches for a file by its exact name within the specified directory.
-    WHEN TO USE: You know the filename (e.g. 'test_fixture.py') but not its relative path.
     Args:
         filename: The exact name of the file to search for.
         dir: Relative path to the starting directory from the workspace root (default: ".").
@@ -381,8 +372,6 @@ async def nagato_searchAST(query: str, file: str, max_results: int = 5, start_of
     Searches for functions, classes, or variables in the AST of a SINGLE FILE that match the query in their name.
     Structurally aware: only matches actual symbol definitions, never false-positives from comments or strings.
     LIMITATION: Single-file only. For cross-file / project-wide symbol search, use nagato_read_signatures(target_symbol=...) instead.
-    WHEN TO USE: you know which file to look in and want to find symbols by partial name.
-    WHEN NOT TO USE: you want to find a symbol across the whole codebase — use nagato_read_signatures for that.
     Args:
         query: Partial symbol name to search for (case-insensitive substring match). NOT a regex.
         file: Relative path to the file from the workspace root.
@@ -484,12 +473,6 @@ async def nagato_rebuild_symbol_db(dir: str = None, _ctx: Optional[Any] = None) 
 async def nagato_set_semantic_search_root(path: str, _ctx: Optional[Any] = None) -> str:
     """
     Set the semantic search root directory and immediately reindex it.
-    
-    This tool configures which directory is used as the base for semantic indexing/search.
-    It supports both session mode (session-scoped override) and standalone mode (config file base).
-    
-    The new root takes effect immediately with a synchronous reindex, avoiding the "search triggers
-    a surprise lazy index of the wrong dir" problem.
     
     Args:
         path: Directory path to set as the semantic search root. Can be absolute or relative to workspace root.

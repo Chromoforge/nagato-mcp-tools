@@ -95,7 +95,7 @@ class TokenUsageSnapshot(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     model: Optional[str] = None
     provider: Optional[str] = None
-    nfsm_ctx_tokens: int = 0
+    nagatoboot_ctx_tokens: int = 0
     system_prompt_tokens: int = 0
     handoff_tokens: int = 0
     agent_output_tokens: int = 0

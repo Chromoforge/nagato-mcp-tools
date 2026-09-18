@@ -113,9 +113,9 @@ def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
         from fsm.token_budget import TokenBudget  # host-only
     except (ImportError, Exception):
         TokenBudget = None  # type: ignore[misc]  # fsm-only; standalone gets None
-    # Get the context block (NFSM CTX)
-    nfsm_ctx = context.ContextBlock if hasattr(context, 'ContextBlock') else ""
-    nfsm_ctx_tokens = estimate(nfsm_ctx)
+    # Get the context block (NAGATO_BOOT CTX)
+    nagatoboot_ctx = context.ContextBlock if hasattr(context, 'ContextBlock') else ""
+    nagatoboot_ctx_tokens = estimate(nagatoboot_ctx)
     
     # System prompt (workflow instructions)
     system_prompt = context.WorkflowDescription if hasattr(context, 'WorkflowDescription') else ""
@@ -140,11 +140,11 @@ def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
             tool_docs = doc
     tool_docs_tokens = estimate(tool_docs)
     
-    total = nfsm_ctx_tokens + system_prompt_tokens + handoff_artifact_tokens + last_action_result_tokens + tool_docs_tokens
+    total = nagatoboot_ctx_tokens + system_prompt_tokens + handoff_artifact_tokens + last_action_result_tokens + tool_docs_tokens
     limit = getattr(context, 'MaxContextTokens', 1200)
     
     return TokenBudget(
-        nfsm_ctx=nfsm_ctx_tokens,
+        nagatoboot_ctx=nagatoboot_ctx_tokens,
         system_prompt=system_prompt_tokens,
         handoff_artifact=handoff_artifact_tokens,
         last_action_result=last_action_result_tokens,

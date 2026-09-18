@@ -117,7 +117,6 @@ class MockFSMContext:
     last_context_tokens: int = 0
     last_hard_handoff_tokens: Optional[int] = None
     NewLine: str = "\n"
-    Header: str = "[NFSM CTX]\n"
     Turn: int = 0
     
     # Header variants kept for backward-compatible value stripping
@@ -149,8 +148,6 @@ class MockFSMContext:
     # --- Target file being worked on ---
     Target = ""
     candidates = []
-    
-    Footer = "[/NFSM CTX]"
     
     BugfixInstruction = ""
     RefactorInstruction = ""
@@ -490,7 +487,7 @@ class MockFSMContext:
     
     # --- Context rendering (minimal) ---
     
-    def generateNFSMContext(self, gold_state: str = "unknown", reds: int = -1, anchor: str = "", run_id: str = "", hard_handoff_tokens: Optional[int] = None) -> str:
+    def generateNAGATO_BOOTContext(self, gold_state: str = "unknown", reds: int = -1, anchor: str = "", run_id: str = "", hard_handoff_tokens: Optional[int] = None) -> str:
         """Generate context block matching the new YAML format."""
         context_format = get_context_format()
         
@@ -589,7 +586,7 @@ class MockFSMContext:
             lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens} (ctx:{soft_tokens} sys:0 handoff:0 last_result:0 tool_docs:0)")
         if soft_tokens > self.MaxContextTokens:
             lines.append(
-                f"⚠️ TOKEN_BUDGET_WARNING: NFSM Context is {soft_tokens} tokens "
+                f"⚠️ TOKEN_BUDGET_WARNING: NAGATO_BOOT Context is {soft_tokens} tokens "
                 f"(limit {self.MaxContextTokens}). Consider wrapping up or requesting a chat rotation."
             )
         
