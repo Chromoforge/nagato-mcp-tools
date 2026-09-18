@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -47,7 +48,7 @@ except ImportError:
 
 # Standalone fallback stubs for when full host tooling is unavailable
 if not FSM_MODE_AVAILABLE:
-    async def nagato_run_test(test_node_id: str, timeout_seconds: int = 120, _ctx = None) -> str:
+    async def nagato_run_test(test_node_id: str, timeout_seconds: int = 120, idle_timeout_seconds: int = 30, _ctx = None) -> str:
         """Standalone stub: host tools unavailable."""
         return (
             "STANDALONE MODE: nagato_run_test is unavailable — core host tooling not installed.\n"
@@ -150,14 +151,21 @@ def _try_dispatch_suite_via_provider(
         return None
 
 
-async def nagato_run_test(test_node_id: str, timeout_seconds: int = 120, _ctx: Optional[Any] = None) -> str:
+async def nagato_run_test(
+    test_node_id: str,
+    timeout_seconds: int = 600,
+    idle_timeout_seconds: int = 30,
+    _ctx: Optional[Any] = None,
+) -> str:
     """
     Executes an isolated pytest and returns the full result directly.
-    Waits for completion (not fire-and-forget).
+    Streams output line-by-line for hang detection and real-time progress.
+
     Args:
-        test_node_id:     The pytest node identifier or test file path (e.g., TitanTest/test_xy.py::test_name).
-        timeout_seconds:  Maximum wait time in seconds (default 120).
-        _ctx:             Optional session context (injected by facade).
+        test_node_id: The pytest node identifier or test file path (e.g., TitanTest/test_xy.py::test_name).
+        timeout_seconds: Maximum total runtime in seconds (default 600). Safety net for runaway suites.
+        idle_timeout_seconds: Maximum seconds without new output before aborting due to a hang (default 30).
+        _ctx: Optional session context (injected by facade).
     """
     if not test_node_id or not isinstance(test_node_id, str):
         return nagato_error("test_node_id must be a non-empty string specifying a pytest node or test file path.", tool="nagato_run_test")
@@ -171,7 +179,12 @@ async def nagato_run_test(test_node_id: str, timeout_seconds: int = 120, _ctx: O
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "nagato_run_test_latest.log"
 
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONPATH": str(workspace_root)}
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": str(workspace_root),
+        }
         cmd = [python_executable, "-m", "pytest", test_node_id, "--tb=short", "-o", "log_cli=false", "-v"]
 
         process = await asyncio.create_subprocess_exec(
@@ -183,17 +196,46 @@ async def nagato_run_test(test_node_id: str, timeout_seconds: int = 120, _ctx: O
             stderr=asyncio.subprocess.STDOUT,
         )
 
-        try:
-            stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
+        output_lines: list[str] = []
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
+        hard_deadline = start_time + timeout_seconds
+
+        timed_out_reason: Optional[str] = None
+        while True:
+            now = loop.time()
+            remaining_hard = hard_deadline - now
+            if remaining_hard <= 0:
+                timed_out_reason = f"Hard timeout after {timeout_seconds}s. Test aborted."
+                break
+
+            current_timeout = min(float(idle_timeout_seconds), remaining_hard)
+            try:
+                assert process.stdout is not None
+                line_bytes = await asyncio.wait_for(process.stdout.readline(), timeout=current_timeout)
+            except asyncio.TimeoutError:
+                if loop.time() >= hard_deadline:
+                    timed_out_reason = f"Hard timeout after {timeout_seconds}s. Test aborted."
+                else:
+                    timed_out_reason = f"No test progress/output for {idle_timeout_seconds}s (idle timeout). Test aborted — likely hung."
+                break
+
+            if not line_bytes:  # EOF reached
+                break
+
+            line = line_bytes.decode("utf-8", errors="replace")
+            output_lines.append(line)
+
+        if timed_out_reason is not None:
             from nagato_tools.errors import kill_subprocess_tree
             await kill_subprocess_tree(process)
-            return nagato_error(
-                f"Timeout after {timeout_seconds}s. Test aborted.",
-                tool="nagato_run_test",
-            )
+            partial_output = "".join(output_lines)
+            log_path.write_text(partial_output, encoding="utf-8")
+            return nagato_error(timed_out_reason, tool="nagato_run_test")
 
-        output = stdout_bytes.decode("utf-8", errors="replace")
+        await process.wait()
+
+        output = "".join(output_lines)
         log_path.write_text(output, encoding="utf-8")
 
         status = "PASSED" if process.returncode == 0 else f"FAILED (exit {process.returncode})"
@@ -204,11 +246,16 @@ async def nagato_run_test(test_node_id: str, timeout_seconds: int = 120, _ctx: O
     except Exception as e:
         return nagato_error(str(e), tool="nagato_run_test")
 
+
 async def nagato_run_gold_full(_ctx: Optional[Any] = None) -> str:
     """
     Executes the Gold Full acceptance run via configured suite provider.
 
-    Returns a clean, machine-readable result.
+    Args:
+        _ctx: Optional session context (injected by facade).
+
+    Returns:
+        Clean, machine-readable result.
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
@@ -258,9 +305,9 @@ async def nagato_run_configured_suite(semantic_role: Optional[str] = None, _ctx:
     Runs whichever suite is configured as 'primary_suite' in TitanTest/config.json
     (default: "gold"), or an explicit semantic_role override.
 
-    Single entry point so projects without a Gold Suite can configure "targeted"
-    (or any other provider-defined role) as their acceptance suite, without needing
-    a dedicated tool/state per suite.
+    Args:
+        semantic_role: Optional override for the suite to run.
+        _ctx: Optional session context (injected by facade).
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
