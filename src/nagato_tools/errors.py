@@ -2,7 +2,7 @@
 
 All nagato_* tool functions (registered in NagatoFSM.tool_registry) should return
 errors via `_nagato_error(message, tool="nagato_<name>")` instead of ad-hoc
-prefixes like "ERROR:", "CRITICAL ERROR in X:", or "[NFSM ERROR]". This keeps
+prefixes like "ERROR:", "CRITICAL ERROR in X:", or "[NAGATO_BOOT ERROR]". This keeps
 every tool error in the single, parseable shape `ERROR[<tool_name>]: <message>`,
 which is what the planned Context.LastErrors fields will extract from.
 
