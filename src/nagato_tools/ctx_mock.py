@@ -582,8 +582,8 @@ class MockFSMContext:
         
         # Token count
         soft_tokens = estimate("\n".join(lines))
-        if get_show_token_budget_to_llm():
-            lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens} (ctx:{soft_tokens} sys:0 handoff:0 last_result:0 tool_docs:0)")
+        # Always include token budget line for CLI display; config controls LLM visibility
+        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens} (ctx:{soft_tokens} sys:0 handoff:0 last_result:0 tool_docs:0)")
         if soft_tokens > self.MaxContextTokens:
             lines.append(
                 f"⚠️ TOKEN_BUDGET_WARNING: NAGATO_BOOT Context is {soft_tokens} tokens "
@@ -624,8 +624,8 @@ class MockFSMContext:
             lines.append(f"last_result={snapshot['last_action_result']}")
         
         soft_tokens = estimate("\n".join(lines))
-        if get_show_token_budget_to_llm():
-            lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
+        # Always include token budget line for CLI display; config controls LLM visibility
+        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
         if soft_tokens > self.MaxContextTokens:
             lines.append(f"⚠️ TOKEN_BUDGET_WARNING: {soft_tokens} tokens (limit {self.MaxContextTokens})")
         
@@ -688,8 +688,8 @@ class MockFSMContext:
         lines.append(json_str)
         
         soft_tokens = estimate("\n".join(lines))
-        if get_show_token_budget_to_llm():
-            lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
+        # Always include token budget line for CLI display; config controls LLM visibility
+        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
         if soft_tokens > self.MaxContextTokens:
             lines.append(f"⚠️ TOKEN_BUDGET_WARNING: {soft_tokens} tokens (limit {self.MaxContextTokens})")
         

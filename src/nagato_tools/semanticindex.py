@@ -28,12 +28,24 @@ _onnxruntime = None
 try:
     from fastembed import TextEmbedding
 except ImportError:
-    TextEmbedding = Any  # type: ignore[assignment,misc]
+    TextEmbedding = None  # type: ignore[assignment]
 
 try:
     import numpy as np
 except ImportError:
     np = None  # type: ignore[assignment]
+
+def _has_embedding_support() -> bool:
+    """Check if a real embedding backend is available (not None / typing.Any)."""
+    global TextEmbedding
+    if TextEmbedding is not None and TextEmbedding is not Any:
+        return True
+    try:
+        from fastembed import TextEmbedding as _TE
+        TextEmbedding = _TE
+        return _TE is not None and _TE is not Any
+    except (ImportError, Exception):
+        return False
 
 def _get_semantic_index_search():
     """Lazy-load SemanticIndexSearch and its heavy dependencies."""
@@ -78,6 +90,15 @@ def _get_semantic_index_search():
         global SemanticIndexSearch
         _SemanticIndexSearch = SemanticIndexSearch
     return _SemanticIndexSearch
+
+
+def _has_embedding_support() -> bool:
+    """Check if a real embedding backend is available (not typing.Any / dummy)."""
+    try:
+        from fastembed import TextEmbedding as _TE
+        return _TE is not Any and _TE is not None
+    except (ImportError, Exception):
+        return False
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
@@ -237,21 +258,24 @@ class SemanticIndexSearch:
         self.db_path = db_path
         self.conn = sqlite3.connect(self.db_path)
         
-        # Load sqlite-vec extension if available
+        # Load sqlite-vec extension if available AND embedding backend is functional
         self.has_vector_support = False
-        try:
-            import sqlite_vec
-            self.conn.enable_load_extension(True)
-            sqlite_vec.load(self.conn)
-            self.has_vector_support = True
-            logger.debug("sqlite_vec extension loaded successfully")
-        except (ImportError, ModuleNotFoundError) as exc:
-            logger.debug("sqlite_vec extension not available: %s", exc)
-        except Exception as exc:
-            logger.warning("Failed to initialize sqlite_vec extension: %s", exc)
-            # Log more details about the error for debugging
-            import traceback
-            logger.debug(f"Detailed traceback: {traceback.format_exc()}")
+        if _has_embedding_support():
+            try:
+                import sqlite_vec
+                self.conn.enable_load_extension(True)
+                sqlite_vec.load(self.conn)
+                self.has_vector_support = True
+                logger.debug("sqlite_vec extension loaded successfully")
+            except (ImportError, ModuleNotFoundError) as exc:
+                logger.debug("sqlite_vec extension not available: %s", exc)
+            except Exception as exc:
+                logger.warning("Failed to initialize sqlite_vec extension: %s", exc)
+                # Log more details about the error for debugging
+                import traceback
+                logger.debug(f"Detailed traceback: {traceback.format_exc()}")
+        else:
+            logger.debug("Vector support disabled: fastembed is not installed or available.")
 
         with self.conn:
             # Existing chunks for vector search
@@ -451,8 +475,8 @@ class SemanticIndexSearch:
             cursor.execute("DELETE FROM global_calls WHERE file_path = ?", (stored_path,))
             cursor.execute("DELETE FROM indexed_file_meta WHERE file_path = ?", (stored_path,))
 
-            # A) Write vector index (if chunks are present)
-            if chunks:
+            # A) Write vector index (if chunks are present and vector support enabled)
+            if chunks and self.has_vector_support:
                 vectors = list(self.Model.embed(chunks))
                 for code, meta, vec in zip(chunks, metas, vectors):
                     cursor.execute(

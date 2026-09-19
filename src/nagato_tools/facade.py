@@ -239,6 +239,25 @@ class ToolFacade:
         """Check if a function is async."""
         return func_name in self._async_functions
     
+    def _validate_parameters(self, func_name: str, func: Callable, kwargs: dict) -> Optional[str]:
+        """Validate that all keyword arguments are valid for the function.
+        
+        Returns an error message string if validation fails, None if valid.
+        """
+        sig = inspect.signature(func)
+        valid_params = set(sig.parameters.keys())
+        # Remove internal parameters that are injected automatically
+        valid_params.discard('_ctx')
+        valid_params.discard('ctx')
+        
+        unknown = [k for k in kwargs.keys() if k not in valid_params]
+        if unknown:
+            return (
+                f"PARAMETER_ERROR({func_name}): Unknown parameter(s): {', '.join(unknown)}. "
+                f"Valid parameters: {', '.join(sorted(valid_params))}."
+            )
+        return None
+
 
     def _preprocess_arguments(self, func, kwargs: dict) -> dict:
         if not _HAS_INPUT_REPAIR:
@@ -294,6 +313,11 @@ class ToolFacade:
             raise RuntimeError(
                 f"Function '{func_name}' is async. Use 'acall' or 'await facade.acall(...)'."
             )
+        
+        # Validate parameters before calling
+        validation_error = self._validate_parameters(func_name, func, kwargs)
+        if validation_error:
+            raise ValueError(validation_error)
         
         # Inject context if the function accepts it and it is not already bound
         sig = inspect.signature(func)
@@ -384,6 +408,11 @@ class ToolFacade:
         if func is None:
             available = ', '.join(sorted(self._registry.keys()))
             raise ValueError(f"Function '{func_name}' not found. Available: {available}")
+        
+        # Validate parameters before calling
+        validation_error = self._validate_parameters(func_name, func, kwargs)
+        if validation_error:
+            raise ValueError(validation_error)
         
         # Inject context if the function accepts it and it is not already bound
         sig = inspect.signature(func)

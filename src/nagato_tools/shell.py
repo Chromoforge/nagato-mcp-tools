@@ -68,6 +68,7 @@ DANGEROUS_COMMANDS = {
     'ssh', 'scp', 'rsync', 'sftp',
     'curl', 'wget', 'nc', 'netcat', 'telnet',
     'perl', 'ruby', 'node', 'php', 'bash', 'sh', 'zsh', 'fish',
+    'git',  # Block git commands - use nagato_git / nagato_upload instead
     # Note: powershell, pwsh, cmd are allowed as they are native shells on Windows
 }
 
@@ -79,6 +80,7 @@ DANGEROUS_PATTERNS = [
     '&& rm', '; rm',
     'sudo ', 'su -',
     'chmod 777', 'chmod +x',
+    'git ',  # Block git commands - use nagato_git / nagato_upload instead
 ]
 
 
