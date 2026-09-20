@@ -245,12 +245,15 @@ python sync_tools.py --build-ui
 
 Control which tools are available via:
 
-### 1. Config File (`.nagato/standalone.yaml`)
-```yaml
-# .nagato/standalone.yaml
-allowed_categories: ["READ", "SEARCH", "EXECUTE"]
-denied_tools: ["nagato_shell", "nagato_git", "nagato_upload"]
-# allowed_tools: ["nagato_read_file", "nagato_searchInFile"]  # Alternative: explicit allowlist
+### 1. Config File (`.nagato/functions_config.json`)
+```json
+{
+  "tool_filtering": {
+    "allowed_categories": ["READ", "SEARCH", "EXECUTE"],
+    "denied_tools": ["nagato_shell", "nagato_git", "nagato_upload"]
+    // "allowed_tools": ["nagato_read_file", "nagato_searchInFile"]  // Alternative: explicit allowlist
+  }
+}
 ```
 
 **Category names** match `ToolCategory` enum: `EDIT`, `TESTING`, `GIT`, `SEARCH`, `WEB`, `READ`, `EXECUTE`, `DEBUGGING`, `SYSTEM`, `SHELL`, `CREATION`, `PLANNING`.
@@ -346,6 +349,55 @@ To prevent huge files or unbounded searches from overwhelming LLM context window
 > }
 > ```
 > Nagato will look for `/path/to/target-project/.nagato/functions_config.json`.
+
+---
+
+### 📋 Complete Configuration Example
+
+Here's a full `.nagato/functions_config.json` showing all available options:
+
+```json
+{
+  "tool_filtering": {
+    "denied_tools": ["nagato_shell", "nagato_upload"],
+    "allowed_categories": ["READ", "SEARCH", "EXECUTE", "EDIT"],
+    "allowed_tools": []
+  },
+  "insight": {
+    "enabled": true,
+    "embedding_provider": "fastembed",
+    "embedding_model": "jinaai/jina-embeddings-v2-base-code",
+    "embedding_dimension": 768
+  },
+  "semantic_search": {
+    "db_path": "nagato_codebase.db",
+    "embedding_model": "jina",
+    "dimension": 768,
+    "auto_index": true
+  },
+  "lint": {
+    "enabled": true,
+    "soft_mode": true,
+    "auto_fix": false,
+    "ruff_path": "ruff"
+  },
+  "tool_token_limits": {
+    "default": 20000,
+    "read": 50000,
+    "search": "unlimited",
+    "shell": 0
+  }
+}
+```
+
+**Key Points:**
+- **`tool_filtering`** — Controls which tools are available (see [Tool Filtering](#-tool-filtering))
+- **`insight`** — Enables the knowledge graph (requires `[semantic]` extra)
+- **`semantic_search`** — Vector search configuration
+- **`lint`** — Ruff linting behavior
+- **`tool_token_limits`** — Output truncation per category (0 = unlimited)
+
+All paths are relative to the `--workspace` directory.
 ---
 
 
