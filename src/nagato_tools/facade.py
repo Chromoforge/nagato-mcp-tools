@@ -11,18 +11,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union, Set
 
 from nagato_tools.ctx_mock import MockFSMContext, get_mock_context, _resolve_session_id
-
-try:
-    from nagato_tools.input_repair import (
-        strip_noise_from_payload,
-        repair_malformed_json,
-        coerce_primitives,
-        resolve_file_path,
-    )
-    _HAS_INPUT_REPAIR = True
-except ImportError:
-    _HAS_INPUT_REPAIR = False
-
 from nagato_tools.tool_categories import ToolCategory
 
 
@@ -34,7 +22,7 @@ class ToolFacade:
     
     Standalone mode supports tool filtering via:
     - Constructor parameters (explicit, highest priority)
-    - Config file: .nagato/standalone.yaml (defaults, lower priority)
+    - Config file: .nagato/functions_config.json under 'tool_filtering' key (defaults, lower priority)
     - Runtime methods: enable_tool(), disable_tool(), etc.
     """
     
@@ -107,7 +95,7 @@ class ToolFacade:
         return self._workspace_root
     
     def _load_standalone_config(self) -> None:
-        """Load tool filtering config from .nagato/standalone.yaml if not explicitly provided."""
+        """Load tool filtering config from .nagato/functions_config.json if not explicitly provided."""
         if self._filter_config_loaded or self._fsm is not None:
             return  # Only for standalone mode, and only once
         
@@ -179,10 +167,13 @@ class ToolFacade:
     
     def _build_registry(self) -> None:
         """Auto-discover and register all nagato_* functions from nagato_tools."""
+        # Load standalone config before building registry
+        self._load_standalone_config()
+        
         import nagato_tools
         
         # List of modules to scan
-        modules_to_scan = ['edit', 'execute', 'search', 'read', 'lint', 'git', 'web', 'services', 'test', 'subgoals', 'create', 'debugger', 'extractsignature', 'extractcallgraph', 'semanticindex', 'errors', 'system', 'config', 'undo', 'shell', 'monitor', 'token_calculator']
+        modules_to_scan = ['edit', 'execute', 'search', 'read', 'lint', 'git', 'web', 'test', 'create', 'extractsignature', 'extractcallgraph', 'semanticindex', 'errors', 'config', 'undo', 'shell', 'monitor', 'token_calculator', 'action_journal']
         
         for module_name in modules_to_scan:
             try:
