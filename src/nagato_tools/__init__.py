@@ -25,6 +25,7 @@ from .undo import *
 from .shell import *
 from .monitor import *
 from ._post_edit_safety import *
+from .input_repair import *
 
 # Facade for unified access
 from .facade import ToolFacade, get_tool_facade

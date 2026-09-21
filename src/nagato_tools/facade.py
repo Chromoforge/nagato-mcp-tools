@@ -10,6 +10,18 @@ import inspect
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union, Set
 
+
+try:
+    from nagato_tools.input_repair import (
+        strip_noise_from_payload,
+        repair_malformed_json,
+        coerce_primitives,
+        resolve_file_path,
+    )
+    _HAS_INPUT_REPAIR = True
+except ImportError:
+    _HAS_INPUT_REPAIR = False
+
 from nagato_tools.ctx_mock import MockFSMContext, get_mock_context, _resolve_session_id
 from nagato_tools.tool_categories import ToolCategory
 
