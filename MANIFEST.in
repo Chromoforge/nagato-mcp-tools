@@ -4,6 +4,7 @@
 include README.md
 include LICENSE
 include AGENT_INSTRUCTIONS.md
+include CHANGES.md
 include setup.py
 include pyproject.toml
 
