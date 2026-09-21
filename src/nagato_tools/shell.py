@@ -5,7 +5,7 @@ Provides nagato_shell() for executing shell commands with:
 - Hard timeout (default 5 seconds)
 - Output truncation via ctx.MaxContextSize
 - Command logging (no-op in standalone)
-- Security denylist for dangerous commands
+- Security allowlist for permitted commands (configurable via .nagato/functions_config.json)
 - Structured return with stdout, stderr, exit_code, truncated, timed_out
 """
 import asyncio
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from nagato_tools.config import get_tool_token_limit, get_workspace_root
+from nagato_tools.config import load_functions_config
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _get_context_token_limit, _truncate_to_token_limit
 
@@ -30,8 +31,23 @@ def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
 DEFAULT_TIMEOUT_SECONDS = 5
 
 # ==============================================================================
-# Command Exclusion & Security Lists
+# Command Security: Allowlist Model (configurable via .nagato/functions_config.json)
 # ==============================================================================
+
+# Default allowlist — can be overridden in .nagato/functions_config.json under "shell.allowed_commands"
+DEFAULT_ALLOWED_COMMANDS = frozenset({
+    'python', 'python3', 'python.exe',
+    'pytest', 'ruff', 'mypy', 'black', 'isort',
+    'uv', 'pip',
+    # Windows native shells
+    'cmd', 'cmd.exe', 'powershell', 'pwsh',
+})
+
+# Default allowed environment variable keys — can be overridden in config
+DEFAULT_ALLOWED_ENV_KEYS = frozenset({
+    'PYTHONPATH', 'PYTHONUTF8', 'PYTHONUNBUFFERED',
+    'PATH', 'HOME', 'USERPROFILE',
+})
 
 # Test runners excluded from nagato_shell — agents must use nagato_run_test instead
 EXCLUDED_TEST_COMMANDS = {
@@ -53,26 +69,7 @@ EXCLUDED_TEST_PATTERNS = [
     'run_tests.cmd',
 ]
 
-# Denylist of dangerous commands/patterns
-DANGEROUS_COMMANDS = {
-    'rm', 'rmdir', 'del', 'erase', 'format', 'fdisk', 'mkfs',
-    'sudo', 'su', 'doas', 'runas', 'pkexec',
-    'chmod', 'chown', 'chgrp', 'attrib', 'icacls',
-    'shutdown', 'reboot', 'halt', 'poweroff', 'init',
-    'dd', 'fsck', 'mount', 'umount',
-    'kill', 'killall', 'pkill', 'taskkill',
-    'passwd', 'usermod', 'userdel', 'groupmod', 'groupdel',
-    'iptables', 'ufw', 'firewall-cmd', 'netsh',
-    'systemctl', 'service', 'sc', 'net',
-    'crontab', 'at', 'schtasks',
-    'ssh', 'scp', 'rsync', 'sftp',
-    'curl', 'wget', 'nc', 'netcat', 'telnet',
-    'perl', 'ruby', 'node', 'php', 'bash', 'sh', 'zsh', 'fish',
-    'git',  # Block git commands - use nagato_git / nagato_upload instead
-    # Note: powershell, pwsh, cmd are allowed as they are native shells on Windows
-}
-
-# Dangerous patterns in full command line
+# Defense-in-depth: dangerous patterns that are always blocked regardless of allowlist
 DANGEROUS_PATTERNS = [
     'rm -rf', 'rm -r', 'rm -f',
     '> /dev/', '>/dev/',
@@ -84,9 +81,23 @@ DANGEROUS_PATTERNS = [
 ]
 
 
-def _check_command_blocked(args: List[str]) -> tuple[bool, str]:
+def _load_shell_config(ctx: Optional[Any] = None) -> tuple[frozenset[str], frozenset[str]]:
+    """Load shell allowlist configuration from .nagato/functions_config.json."""
+    try:
+        workspace_root = _get_workspace_root(ctx)
+        config = load_functions_config(workspace_root / ".nagato" / "functions_config.json")
+        shell_cfg = config.tool_filtering.get("shell", {}) if config.tool_filtering else {}
+        
+        allowed_commands = frozenset(shell_cfg.get("allowed_commands", DEFAULT_ALLOWED_COMMANDS))
+        allowed_env_keys = frozenset(shell_cfg.get("allowed_env_keys", DEFAULT_ALLOWED_ENV_KEYS))
+        return allowed_commands, allowed_env_keys
+    except Exception:
+        return DEFAULT_ALLOWED_COMMANDS, DEFAULT_ALLOWED_ENV_KEYS
+
+
+def _check_command_blocked(args: List[str], ctx: Optional[Any] = None) -> tuple[bool, str]:
     """
-    Check if command is blocked (dangerous command or excluded test runner).
+    Check if command is blocked (not in allowlist, excluded test runner, or dangerous pattern).
     
     Returns:
         (is_blocked, reason)
@@ -97,6 +108,9 @@ def _check_command_blocked(args: List[str]) -> tuple[bool, str]:
     cmd = args[0].lower()
     cmd_basename = os.path.basename(cmd)
     cmd_stem = cmd_basename[:-4] if cmd_basename.endswith(".exe") else cmd_basename
+    
+    # Load allowlist config
+    allowed_commands, _ = _load_shell_config(ctx)
     
     # 1. Test runner exclusion checks (direct command name or executable)
     if cmd_basename in EXCLUDED_TEST_COMMANDS or cmd_stem in EXCLUDED_TEST_COMMANDS:
@@ -116,16 +130,42 @@ def _check_command_blocked(args: List[str]) -> tuple[bool, str]:
                 "nagato_shell has a hard 5-second timeout and is not intended for test executions."
             )
 
-    # 3. Dangerous system commands
-    if cmd_basename in DANGEROUS_COMMANDS or cmd_stem in DANGEROUS_COMMANDS:
-        return True, f"Command '{cmd_basename}' is blocked (dangerous operation)"
-    
-    # 4. Dangerous patterns in full command
+    # 3. Allowlist check: command basename must be in allowed_commands
+    if cmd_basename not in allowed_commands and cmd_stem not in allowed_commands:
+        return True, (
+            f"Command '{cmd_basename}' is not in the allowed commands list. "
+            f"Allowed: {', '.join(sorted(allowed_commands))}. "
+            f"Configure via .nagato/functions_config.json under 'shell.allowed_commands'."
+        )
+
+    # 4. Defense-in-depth: dangerous patterns in full command (always blocked)
     for pattern in DANGEROUS_PATTERNS:
         if pattern in full_cmd:
             return True, f"Dangerous pattern detected: '{pattern}'"
     
     return False, ""
+
+
+def _validate_env(env: Optional[Dict[str, str]], ctx: Optional[Any] = None) -> Optional[str]:
+    """Validate environment variables against allowlist. Returns error message or None."""
+    if not env:
+        return None
+    
+    _, allowed_env_keys = _load_shell_config(ctx)
+    
+    for key in env.keys():
+        if key not in allowed_env_keys:
+            return f"Environment variable '{key}' is not allowed. Allowed: {', '.join(sorted(allowed_env_keys))}. Configure via .nagato/functions_config.json under 'shell.allowed_env_keys'."
+    
+    # Additional sanitization for PATH
+    if 'PATH' in env:
+        path_val = env['PATH']
+        # Basic sanity: no directory traversal, no absolute paths outside workspace
+        for part in path_val.split(os.pathsep):
+            if part.startswith('..') or (os.path.isabs(part) and not part.startswith(str(_get_workspace_root(ctx)))):
+                return f"PATH contains disallowed entry: '{part}'"
+    
+    return None
 
 
 _is_dangerous_command = _check_command_blocked
@@ -253,7 +293,7 @@ async def _nagato_shell_raw(
         }
     
     # Exclusion and security check
-    is_blocked, reason = _check_command_blocked(cmd_list)
+    is_blocked, reason = _check_command_blocked(cmd_list, _ctx)
     if is_blocked:
         _log_command(session_id, cmd_list, cwd or str(workspace_root), {
             "exit_code": None,
@@ -265,6 +305,26 @@ async def _nagato_shell_raw(
         return {
             "stdout": "",
             "stderr": nagato_error(reason, tool="nagato_shell"),
+            "exit_code": None,
+            "truncated": False,
+            "timed_out": False,
+            "command": cmd_list,
+            "cwd": cwd or str(workspace_root),
+        }
+    
+    # Validate environment variables
+    env_error = _validate_env(env, _ctx)
+    if env_error:
+        _log_command(session_id, cmd_list, cwd or str(workspace_root), {
+            "exit_code": None,
+            "timed_out": False,
+            "truncated": False,
+            "stdout": "",
+            "stderr": env_error,
+        })
+        return {
+            "stdout": "",
+            "stderr": nagato_error(env_error, tool="nagato_shell"),
             "exit_code": None,
             "truncated": False,
             "timed_out": False,
@@ -314,6 +374,7 @@ async def _nagato_shell_raw(
     # Prepare environment
     process_env = os.environ.copy()
     if env:
+        # env has already been validated by _validate_env
         process_env.update(env)
     
     # Execute command with timeout
