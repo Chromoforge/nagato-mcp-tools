@@ -125,27 +125,34 @@ async def nagato_upload(commit_message: str, _ctx: Optional[Any] = None) -> str:
     fsm = None
     Event = None
     apply_event = None
-    try:
+    
+    # Try to get FSM instance from context first (injected by facade)
+    if _ctx is not None and hasattr(_ctx, 'fsm') and _ctx.fsm is not None:
+        fsm = _ctx.fsm
+        has_fsm = True
+    else:
+        # Fallback: try to get from global FSM instance (for backward compatibility)
         try:
-            from fsm.nagato_fsm import NagatoFSM  # host-only
-        except (ImportError, Exception):
-            NagatoFSM = None  # type: ignore[misc]  # fsm-only; standalone gets None
+            from nagato_tools import edit as edit_module
+            fsm = edit_module._get_fsm_instance()
+            if fsm is not None:
+                has_fsm = True
+        except Exception:
+            pass
+    
+    if has_fsm and fsm is not None:
         try:
-            from fsm.events import Event  # host-only
-        except (ImportError, Exception):
-            Event = None  # type: ignore[misc]  # fsm-only; standalone gets None
-        try:
-            from fsm.transition_apply import apply_event  # host-only
-        except (ImportError, Exception):
-            apply_event = None  # type: ignore[misc]  # fsm-only; standalone gets None
-        if NagatoFSM is not None:
-            fsm = NagatoFSM()
-            has_fsm = True
-    except (ImportError, Exception):
-        NagatoFSM = None
-        Event = None
-        apply_event = None
-        has_fsm = False
+            try:
+                from fsm.events import Event  # host-only
+            except (ImportError, Exception):
+                Event = None  # type: ignore[misc]  # fsm-only; standalone gets None
+            try:
+                from fsm.transition_apply import apply_event  # host-only
+            except (ImportError, Exception):
+                apply_event = None  # type: ignore[misc]  # fsm-only; standalone gets None
+        except ImportError:
+            has_fsm = False
+            fsm = None
 
     try:
         if has_fsm and fsm is not None and Event is not None and apply_event is not None:
