@@ -4,12 +4,29 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 
 ## [0.2.1] - Unreleased
 
+### Added
+- **V1 Provider Architecture** (`provider_loader.py`, `suite_contract.py`, `suite_dispatcher.py`): New modular test provider system with dynamic discovery, config parsing, normalized result contract (`NormalizedSuiteResult`), and dispatcher layer. Providers live at `.nagato/test_provider.py` and are configured via `TitanTest/config.json` (or legacy `.nagato/config.json`).
+- **Context Pruning & Token Budgeting** (`config.py`, `ctx_mock.py`, `token_calculator.py`): New config functions `get_context_limits()`, `get_context_format()`, `get_show_token_budget_to_llm()`; `get_token_limits()` now returns `(max_context_size, max_context_tokens, history_token_ratio)`; `get_budget_breakdown()` includes `conversation_history` tokens from LLM message history.
+- **Semantic Index Streaming & Progress** (`semanticindex.py`): Embeddings now streamed with `batch_size=32` and `parallel=None` to avoid loading all vectors into memory; new `progress_callback(current, total, filename)` support for `index_directory_tree()`, `rebuild_symbol_db()`, and `ensure_index_current()`; model cache directory support via `model_cache_dir` config.
+- **Symbol Name Sanitization** (`facade.py`): `_preprocess_arguments()` now strips common LLM prefixes (`call `, `def `, `async def `, `class `, `function `, `method `) from symbol-name parameters (`target_symbol`, `function_name`, `symbol`, `symbol_name`, `name`).
+- **AST Search Line Ranges** (`search.py`): `nagato_searchAST` now reports `end_lineno` (e.g., `lines 10-15`) instead of single line numbers.
+- **Semantic Search Config Defaults** (`config.py`): Default `db_path` changed to `.nagato/nagato_codebase.db`, `model_cache_dir` to `.nagato/models`; `resolve_db_path()` now defaults to `.nagato` folder.
+- **Insight Display Config** (`config.py`): New `get_insight_display_config()` for search/radar formatting options.
+- **Server Type Hint Handling** (`server.py`): `_public_parameters()` now uses `typing.get_type_hints()` for accurate annotation resolution.
+
 ### Changed
-- **Semantic Index RAM throttle**
+- **Semantic Index RAM throttle** — streaming embeddings, progress callbacks, model cache dir
+- **Test Suite Imports** (`test.py`): Switched from `fsm.*` imports to local `nagato_tools.*` modules for provider loader, suite contract, and dispatcher.
+- **Agent Instructions** (`.github/copilot-instructions.md`, `AGENT_INSTRUCTIONS.md`): Removed FSM-specific wrapper reference; added autonomous agent rule (silent execution only).
+- **Version Bump** (`pyproject.toml`): 0.2.0 → 0.2.1
 
 ### Fixed
-
-- **Pre-Parsing missing file
+- **Pre-Parsing missing file** — handled in semantic index
+- **Symbol DB Rebuild Crashes**: Resolved crashes triggered during full symbol database rebuilds.
+- **Standalone Undo Crashes**: Fixed edge-case crashes occurring during standalone undo operations.
+- **Semantic Index Silent Failures** (`semanticindex.py`): AST/syntax errors are now logged and re-raised instead of silently swallowed; added logging for SQLite-Vec initialization.
+- **Edit Tools Parameter Validation** (`edit.py`): Validation blocks unregistered arguments.
+- **Edit Tool Returns** (`edit.py`): Reduced noise and removed redundant return payloads.
 
 ## [0.2.0] - 2026-09-20
 
