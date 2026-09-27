@@ -263,6 +263,7 @@ class ToolFacade:
 
 
     def _preprocess_arguments(self, func, kwargs: dict) -> dict:
+        import re
         if not _HAS_INPUT_REPAIR:
             return kwargs
         sig = inspect.signature(func)
@@ -289,6 +290,23 @@ class ToolFacade:
         for key, value in list(result.items()):
             if isinstance(value, str) and ("file" in key or key.endswith("_path")):
                 result[key] = resolve_file_path(value, self._workspace_root)
+
+        # Clean symbol-name params: strip "call ", "def ", "async def ", "class ", etc.
+        # This handles LLM mistakes like target_symbol="call XYZ" or target_symbol="def ABC"
+        _SYMBOL_CLEAN_PATTERNS = [
+            r"^\s*(?:async\s+)?def\s+",
+            r"^\s*call\s+",
+            r"^\s*class\s+",
+            r"^\s*function\s+",
+            r"^\s*method\s+",
+        ]
+        _SYMBOL_PARAM_NAMES = frozenset({"target_symbol", "function_name", "symbol", "symbol_name", "name"})
+        for key, value in list(result.items()):
+            if isinstance(value, str) and key in _SYMBOL_PARAM_NAMES:
+                cleaned = value.strip()
+                for pat in _SYMBOL_CLEAN_PATTERNS:
+                    cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+                result[key] = cleaned.strip()
 
         return coerce_primitives(result, sig)
 

@@ -2,7 +2,7 @@ import ast
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -143,14 +143,16 @@ class EmbeddingModels:
         Embedding (TextEmbedding): The FastEmbed instance for BAAI.
     """
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, cache_dir: str = ""):
         """Initializes the model configuration.
 
         Args:
             model (str): Name of the model ('baai' or 'jina').
+            cache_dir (str): Optional cache directory for model weights.
         """
         self.model = model.lower()
         self.dimension = 768 if self.model == "jina" else 384
+        self.cache_dir = cache_dir
         self.Embedding = self.getModel()
 
     def getModel(self) -> TextEmbedding:
@@ -180,11 +182,14 @@ class EmbeddingModels:
         Returns:
             TextEmbedding: The FastEmbed instance for BAAI.
         """
-        return TextEmbedding(
-            model_name="BAAI/bge-small-en-v1.5",
-            providers=["CPUExecutionProvider"],
-            max_length=512,
-        )
+        kwargs = {
+            "model_name": "BAAI/bge-small-en-v1.5",
+            "providers": ["CPUExecutionProvider"],
+            "max_length": 512,
+        }
+        if self.cache_dir:
+            kwargs["cache_dir"] = self.cache_dir
+        return TextEmbedding(**kwargs)
 
     def getJina(self) -> TextEmbedding:
         """Initializes the jinaai/jina-embeddings-v2-base-code model.
@@ -194,11 +199,14 @@ class EmbeddingModels:
         Returns:
             TextEmbedding: The FastEmbed instance for Jina Code.
         """
-        return TextEmbedding(
-            model_name="jinaai/jina-embeddings-v2-base-code",
-            providers=["CPUExecutionProvider"],
-            max_length=2048,
-        )
+        kwargs = {
+            "model_name": "jinaai/jina-embeddings-v2-base-code",
+            "providers": ["CPUExecutionProvider"],
+            "max_length": 2048,
+        }
+        if self.cache_dir:
+            kwargs["cache_dir"] = self.cache_dir
+        return TextEmbedding(**kwargs)
 
 
 class SemanticIndexSearch:
@@ -235,11 +243,13 @@ class SemanticIndexSearch:
             self.db_path = resolve_db_path(config_obj, workspace_root)
             self.embedding_model = config_obj.embedding_model
             self.dimension = config_obj.dimension
+            self.model_cache_dir = config_obj.model_cache_dir
         else:
             workspace_root = _get_workspace_root(ctx)
             self.db_path = config.get("db_path") or resolve_db_path(get_semantic_search_config(), workspace_root)
             self.embedding_model = config.get("embedding_model", "jina")
             self.dimension = 384 if self.embedding_model == "baai" else 768
+            self.model_cache_dir = config.get("model_cache_dir", "")
             
         self.init_vector_db(self.db_path)
 
@@ -247,7 +257,7 @@ class SemanticIndexSearch:
     def Model(self):
         """Lazy-loads the embedding model on first access."""
         if self._model is None:
-            self._model_wrapper = EmbeddingModels(self.embedding_model)
+            self._model_wrapper = EmbeddingModels(self.embedding_model, self.model_cache_dir)
             self._model = self._model_wrapper.Embedding
             self.dimension = self._model_wrapper.dimension
         return self._model
@@ -477,8 +487,9 @@ class SemanticIndexSearch:
 
             # A) Write vector index (if chunks are present and vector support enabled)
             if chunks and self.has_vector_support:
-                vectors = list(self.Model.embed(chunks))
-                for code, meta, vec in zip(chunks, metas, vectors):
+                # Stream embeddings to avoid loading all into memory at once
+                # batch_size=32 keeps memory low; parallel=None uses onnxruntime threading (no multiprocessing)
+                for code, meta, vec in zip(chunks, metas, self.Model.embed(chunks, batch_size=32, parallel=None)):
                     cursor.execute(
                         "INSERT INTO code_chunks (file_path, line_number, content) VALUES (?, ?, ?)",
                         (meta["file"], meta["line"], f"# {meta['name']}\n{code}"),
@@ -528,7 +539,8 @@ class SemanticIndexSearch:
 
         return f"Indexed: {len(chunks)} chunks, {len(extracted_sigs)} symbols in {stored_path}."
 
-    def index_directory_tree(self, root_dir: str, *, external: bool = False, ctx: Optional[Any] = None) -> str:
+    def index_directory_tree(self, root_dir: str, *, external: bool = False, ctx: Optional[Any] = None,
+                             progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
         """
         Recursively traverses a directory and indexes all Python files.
         
@@ -540,6 +552,7 @@ class SemanticIndexSearch:
                            If False (default), root_dir is resolved relative to workspace_root,
                            containment check is enforced, and files are stored with workspace-relative POSIX paths.
             ctx: Optional session context for workspace root resolution
+            progress_callback: Optional callback(current, total, filename) for progress updates
         
         Returns:
             str: Summary of indexing results (e.g., "Indexed 42 files (3 skipped, 0 errors) under <path>.")
@@ -562,21 +575,33 @@ class SemanticIndexSearch:
                 return f"ERROR: {root_dir} does not exist or is not a directory."
 
         ignored_dirs = get_ignored_dirs()
-        indexed_count = 0
-        skipped_count = 0
-        error_count = 0
         
+        # Collect files first for progress tracking
+        python_files = []
         for file_path in target_root.rglob("*.py"):
             parts = file_path.relative_to(target_root).parts
             if any(part in ignored_dirs or part.startswith(".") for part in parts):
                 continue
-            
+            python_files.append(file_path)
+        
+        indexed_count = 0
+        skipped_count = 0
+        error_count = 0
+        total_files = len(python_files)
+        
+        for i, file_path in enumerate(python_files):
             if external:
                 # For external files, store absolute POSIX path
                 stored_path = file_path.resolve().as_posix()
             else:
                 # For workspace files, store workspace-relative POSIX path
                 stored_path = str(file_path.relative_to(workspace_root).as_posix())
+            
+            # Progress callback
+            if progress_callback:
+                progress_callback(i + 1, total_files, stored_path)
+            
+            logger.info(f"Indexing [{i+1}/{total_files}]: {stored_path}")
             
             result = self._index_single_file(file_path, stored_path)
             if "Indexed:" in result:
@@ -658,10 +683,16 @@ class SemanticIndexSearch:
 
         return f"Symbol update: {len(extracted_sigs)} symbols updated in {file_rel_path}."
 
-    def rebuild_symbol_db(self, target_dir: str = None, ctx: Optional[Any] = None) -> str:
+    def rebuild_symbol_db(self, target_dir: str = None, ctx: Optional[Any] = None,
+                          progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
         """
         Full rebuild of the SQLite and vector index.
         Deletes the relevant tables and re-indexes all found Python files.
+        
+        Args:
+            target_dir: Optional directory to rebuild (relative to workspace root)
+            ctx: Optional FSM context
+            progress_callback: Optional callback(current, total, filename) for progress updates
         """
         workspace_root = _get_workspace_root(ctx)
         
@@ -726,12 +757,20 @@ class SemanticIndexSearch:
 
         indexed_count = 0
         error_count = 0
-        for file_path in python_files:
+        total_files = len(python_files)
+        for i, file_path in enumerate(python_files):
             try:
                 if scan_root.is_relative_to(workspace_root):
                     file_rel_path = str(file_path.relative_to(workspace_root).as_posix())
                 else:
                     file_rel_path = file_path.resolve().as_posix()
+                
+                # Progress callback
+                if progress_callback:
+                    progress_callback(i + 1, total_files, file_rel_path)
+                
+                logger.info(f"Indexing [{i+1}/{total_files}]: {file_rel_path}")
+                
                 res = self.nagato_index_file_semantic(file_rel_path)
                 if "Indexed:" in res:
                     indexed_count += 1
@@ -743,10 +782,16 @@ class SemanticIndexSearch:
 
         return f"SUCCESS: symbol database re-indexed. {indexed_count} files processed successfully, {error_count} errors."
 
-    def ensure_index_current(self, target_dir: str = None, ctx: Optional[Any] = None) -> str:
+    def ensure_index_current(self, target_dir: str = None, ctx: Optional[Any] = None,
+                             progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
         """
         Ensures the semantic index is current by scanning the codebase and re-indexing any new/changed files,
         and purging deleted files from the index.
+        
+        Args:
+            target_dir: Optional directory to check (relative to workspace root)
+            ctx: Optional FSM context
+            progress_callback: Optional callback(current, total, filename) for progress updates
         """
         # Read auto_index from get_semantic_search_config()
         config = get_semantic_search_config()
@@ -874,8 +919,15 @@ class SemanticIndexSearch:
             # Re-index files
             updated_count = 0
             skipped_count = 0
-            for file_rel_path in to_reindex:
+            total_to_reindex = len(to_reindex)
+            for i, file_rel_path in enumerate(to_reindex):
                 try:
+                    # Progress callback
+                    if progress_callback:
+                        progress_callback(i + 1, total_to_reindex, file_rel_path)
+                    
+                    logger.info(f"Auto-indexing [{i+1}/{total_to_reindex}]: {file_rel_path}")
+                    
                     res = self.nagato_index_file_semantic(file_rel_path)
                     if "Skipped:" in res or "ERROR:" in res or "not found" in res:
                         skipped_count += 1

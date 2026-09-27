@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import logging
 import traceback
+import typing
 import warnings
 from pathlib import Path
 from typing import Any
@@ -60,14 +61,21 @@ def _get_first_doc_paragraph(docstring: str | None, default: str) -> str:
 
 def _public_parameters(func: Any) -> list[inspect.Parameter]:
     """Return the facade function's parameters minus the implicit MCP ``Context``."""
+    try:
+        type_hints = typing.get_type_hints(func)
+    except Exception:
+        type_hints = {}
     params = list(inspect.signature(func).parameters.values())
     public: list[inspect.Parameter] = []
     for param in params:
         if param.name in ("ctx", "_ctx"):
             continue
-        annotation_name = getattr(param.annotation, "__name__", "")
+        annotation = type_hints.get(param.name, param.annotation)
+        annotation_name = getattr(annotation, "__name__", "")
         if annotation_name == "Context":
             continue
+        if annotation is not inspect.Parameter.empty:
+            param = param.replace(annotation=annotation)
         public.append(param)
     return public
 

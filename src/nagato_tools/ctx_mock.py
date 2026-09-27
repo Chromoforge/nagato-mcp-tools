@@ -14,6 +14,10 @@ import yaml
 from typing import Optional, Dict, Any, List, Union
 from pathlib import Path
 from nagato_tools.config import get_token_limits
+from nagato_tools.config import get_context_limits
+from nagato_tools.config import get_context_format
+from nagato_tools.config import get_show_token_budget_to_llm
+from nagato_tools.token_calculator import estimate
 
 
 logger = logging.getLogger(__name__)
@@ -207,7 +211,7 @@ class MockFSMContext:
         self.session_id = _sanitize_session_id(raw_session_id)
         
         # Token limits loaded from config (linked: max_context_size = 80% of max_context_tokens by default)
-        self.MaxContextSize, self.MaxContextTokens = get_token_limits()
+        self.MaxContextSize, self.MaxContextTokens, _ = get_token_limits()
         
         # Instance-specific mutable state (reset per instance)
         self.subgoal_stack: List[Dict[str, Any]] = []

@@ -100,7 +100,7 @@ Violation of this strict routing will result in immediate context bloat. You are
 
 ## Calling Tools — Concrete Syntax
 
-Every standalone tool is called directly by its full name. There is no wrapper entry-point; each `nagato_*` tool is an independent MCP tool.
+Every standalone tool is called directly by its full name; each `nagato_*` tool is an independent MCP tool.
 
 ### Mandatory pattern (every call)
 ```
@@ -141,8 +141,7 @@ nagato_is_agent_running()
 ### Critical rules
 1. **Always invoke directly.** Never write "I will call X" or "Calling X..." without the actual `nagato_*` invocation.
 2. **Always include required parameters.** Check the tool's docstring for mandatory args (e.g. `file_path`, `target_symbol`).
-3. **No JSON wrapper needed.** Unlike the FSM entry-point (`fsm_advance`), standalone tools take their parameters directly — not inside a `target` JSON object.
-4. **No `session_id` required.** Standalone mode is stateless per call; `NAGATO_SESSION_ID` is optional for undo scoping only.
+3. **No `session_id` required.** Standalone mode is stateless per call; `NAGATO_SESSION_ID` is optional for undo scoping only.
 
 
 ## Error Recovery & Undo
@@ -150,7 +149,7 @@ nagato_is_agent_running()
 - **`nagato_undo_standalone`**: persistent undo/redo over every edit/create/delete this tool made, tracked as a **single global chronological stack** — not scoped per file.
   - `mode="step"` (default), `value=N` — undo the last N operations, most recent first, regardless of which file each one touched.
   - `mode="redo"`, `value=N` — redo N previously-undone operations.
-  - There is **no** `mode="time"` or `mode="command"` — only `"step"` and `"redo"` are supported; passing anything other than `"redo"` is silently treated as `"step"`.
+  - Passing anything other than `"redo"` is silently treated as `"step"`.
 - For regressions this tool can't reach (changes made outside these tools, or you need to inspect history first), use `nagato_git` directly: `status`/`diff`/`log` to inspect, `revert`/`checkout_file`/`reset_file` to act.
 
 
@@ -166,3 +165,4 @@ nagato_is_agent_running()
 - **No closures** — keep functions top-level and stateless where possible.
 - **Never weaken assertions** — fix the underlying implementation, never soften tests to force a pass.
 - **No quick fixes, workarounds, or downstream patches** — always fix the issue directly at the root source.
+- **You are an autonomous agent. NEVER output reasoning, explanations, or conversational text, unless explicitly asked. ONLY emit tool calls via the function calling mechanism. Silent execution only.**

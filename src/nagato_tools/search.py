@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from nagato_tools.config import get_tool_token_limit, get_workspace_root
 from nagato_tools.ctx_mock import get_mock_context
@@ -302,8 +302,7 @@ async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int =
         query: Natural-language or code-intent query for semantic retrieval.
         limit: Maximum number of results to display in this page (default: 3).
         start_offset: Optional zero-based offset into the global semantic ranking.
-        _ctx: Optional session context (injected by facade).
-    """
+        _ctx: Optional session context (injected by facade).    """
     ctx = _get_context(_ctx)
     try:
         config = _get_semantic_config()
@@ -410,7 +409,8 @@ async def nagato_searchAST(query: str, file: str, max_results: int = 5, start_of
                 if query_clean.lower() in node.name.lower():
                     kind = "Class" if isinstance(node, ast.ClassDef) else "Function"
                     if start_offset <= total_matches < window_end:
-                        matches.append(f"{kind}: {node.name} (line {node.lineno})")
+                        end_line = getattr(node, 'end_lineno', node.lineno)
+                        matches.append(f"{kind}: {node.name} (lines {node.lineno}-{end_line})")
                     total_matches += 1
 
             # 2. Zuweisungen (Variablen & Attribute)
@@ -419,21 +419,24 @@ async def nagato_searchAST(query: str, file: str, max_results: int = 5, start_of
                     # Fall A: Normale Variable (z.B. MAX_RETRIES = 5)
                     if isinstance(target, ast.Name) and query_clean.lower() in target.id.lower():
                         if start_offset <= total_matches < window_end:
-                            matches.append(f"Variable: {target.id} (line {node.lineno})")
+                            end_line = getattr(node, 'end_lineno', node.lineno)
+                            matches.append(f"Variable: {target.id} (lines {node.lineno}-{end_line})")
                         total_matches += 1
                     
                     # Fall B: Instanz-Attribut (z.B. self.RECOVERY = ...)
                     elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
                         if target.value.id == "self" and query_clean.lower() in target.attr.lower():
                             if start_offset <= total_matches < window_end:
-                                matches.append(f"Attribute: self.{target.attr} (line {node.lineno})")
+                                end_line = getattr(node, 'end_lineno', node.lineno)
+                                matches.append(f"Attribute: self.{target.attr} (lines {node.lineno}-{end_line})")
                             total_matches += 1
 
             # 3. Typisierte Zuweisungen (z.B. state: str = "INITIAL")
             elif isinstance(node, ast.AnnAssign):
                 if isinstance(node.target, ast.Name) and query_clean.lower() in node.target.id.lower():
                     if start_offset <= total_matches < window_end:
-                        matches.append(f"Variable: {node.target.id} (line {node.lineno})")
+                        end_line = getattr(node, 'end_lineno', node.lineno)
+                        matches.append(f"Variable: {node.target.id} (lines {node.lineno}-{end_line})")
                     total_matches += 1
             
 
@@ -459,8 +462,7 @@ async def nagato_rebuild_symbol_db(dir: str = None, _ctx: Optional[Any] = None) 
     If dir is specified, only that directory is cleared and re-indexed.
     Args:
         dir: Optional relative path of the directory to rebuild (e.g., 'Server').
-        _ctx: Optional session context (injected by facade).
-    """
+        _ctx: Optional session context (injected by facade).    """
     ctx = _get_context(_ctx)
     try:
         indexer = SemanticIndexSearch()
@@ -478,8 +480,7 @@ async def nagato_set_semantic_search_root(path: str, _ctx: Optional[Any] = None)
         path: Directory path to set as the semantic search root. Can be absolute or relative to workspace root.
               Can point outside the workspace (external directory) - this is explicitly allowed for
               read+embed indexing only, never for edit/write/execute/git tools.
-        _ctx: Optional session context (injected by facade).
-    
+        _ctx: Optional session context (injected by facade).    
     Returns:
         Summary message including resolved path, persistence scope, external flag, and indexing summary.
     """

@@ -99,12 +99,13 @@ def estimate_messages(messages: List[Dict], encoding_name: str = "cl100k_base") 
     return total
 
 
-def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
+def get_budget_breakdown(context: "NagatoFSMContext", messages: Optional[List[Dict[str, Any]]] = None) -> "TokenBudget":
     """
     Get structured token budget breakdown for a session context.
     
     Args:
         context: Session context instance
+        messages: Optional conversation history messages sent to LLM
         
     Returns:
         TokenBudget with per-component breakdown
@@ -140,7 +141,14 @@ def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
             tool_docs = doc
     tool_docs_tokens = estimate(tool_docs)
     
-    total = nagatoboot_ctx_tokens + system_prompt_tokens + handoff_artifact_tokens + last_action_result_tokens + tool_docs_tokens
+    # Conversation history (messages sent to LLM, excluding system prompt)
+    conversation_history_tokens = 0
+    if messages:
+        # Sum tokens for all messages except the system prompt (first message)
+        for msg in messages[1:]:
+            conversation_history_tokens += estimate(str(msg.get("content", "")))
+    
+    total = nagatoboot_ctx_tokens + system_prompt_tokens + handoff_artifact_tokens + last_action_result_tokens + tool_docs_tokens + conversation_history_tokens
     limit = getattr(context, 'MaxContextTokens', 1200)
     
     return TokenBudget(
@@ -149,6 +157,7 @@ def get_budget_breakdown(context: "NagatoFSMContext") -> "TokenBudget":
         handoff_artifact=handoff_artifact_tokens,
         last_action_result=last_action_result_tokens,
         tool_docs=tool_docs_tokens,
+        conversation_history=conversation_history_tokens,
         total=total,
         limit=limit
     )

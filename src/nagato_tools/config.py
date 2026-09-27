@@ -20,9 +20,9 @@ DEFAULT_IGNORED_DIRS = (
 @dataclass
 class SemanticSearchConfig:
     """Configuration for semantic search functionality."""
-    db_path: str = ""
+    db_path: str = ".nagato/nagato_codebase.db"
     embedding_model: str = "jina"  # "baai" or "jina"
-    model_cache_dir: str = ""
+    model_cache_dir: str = ".nagato/models"
     dimension: int = 768  # Jina default, will be updated based on model
     auto_index: bool = True
     search_root: str = ""  # Optional override for semantic search base directory
@@ -182,6 +182,19 @@ def get_insight_config(config_path: Optional[Path] = None) -> dict:
     }
 
 
+def get_insight_display_config(config_path: Optional[Path] = None) -> dict:
+    """Get the display and formatting configuration for insight search and radar tools."""
+    cfg = get_insight_config(config_path)
+    return {
+        "search_fields": cfg.get("search_fields", ["symbol", "type", "path", "summary_compact"]),
+        "show_ids": cfg.get("show_ids", False),
+        "show_paths": cfg.get("show_paths", True),
+        "show_distances": cfg.get("show_distances", False),
+        "max_summary_chars": cfg.get("max_summary_chars", 120),
+        "deduplicate_identical": cfg.get("deduplicate_identical", True),
+    }
+
+
 def get_force_insight_config() -> dict:
     """Get the force insight gating configuration."""
     import importlib
@@ -261,8 +274,8 @@ def resolve_db_path(config: SemanticSearchConfig, workspace_root: Optional[Path]
             db_path = workspace_root / db_path
         return str(db_path)
     
-    # Default: nagato_codebase.db in workspace root
-    return str(workspace_root / "nagato_codebase.db")
+    # Default: nagato_codebase.db in .nagato folder (consistent with other FSM data)
+    return str(workspace_root / ".nagato" / "nagato_codebase.db")
 
 
 def get_tool_token_limit(category: str, config_path: Optional[Path] = None) -> Optional[int]:
@@ -324,18 +337,68 @@ def get_tool_token_limit(category: str, config_path: Optional[Path] = None) -> O
     return defaults.get(cat_lower, 20000)
 
 
-def get_token_limits() -> tuple[int, int]:
+def get_token_limits() -> tuple[int, int, float]:
     """
-    Get the linked token limits: (max_context_size, max_context_tokens).
+    Get the linked token limits: (max_context_size, max_context_tokens, history_token_ratio).
     
     Standalone version: returns sensible defaults without YAML config.
     
     Returns:
-        tuple: (max_context_size, max_context_tokens)
+        tuple: (max_context_size, max_context_tokens, history_token_ratio)
     """
     max_context_tokens = 1200
     max_context_size = int(max_context_tokens * 0.8)  # 960
-    return max_context_size, max_context_tokens
+    history_token_ratio = 0.5  # 50/50 split by default
+    return max_context_size, max_context_tokens, history_token_ratio
+
+
+def get_context_limits() -> dict:
+    """
+    Get context pruning limits from config with sensible defaults.
+    
+    Standalone version: returns sensible defaults without YAML config.
+    
+    Returns:
+        dict with keys: recent_history_limit, recent_entry_max_chars, context_tier,
+        pending_questions_limit, answered_questions_limit, subgoals_limit, findings_limit,
+        calls_limit, last_errors_limit, call_result_max_chars
+    """
+    return {
+        "recent_history_limit": 5,
+        "recent_entry_max_chars": 4000,
+        "call_result_max_chars": 100,
+        "context_tier": 1,
+        "pending_questions_limit": 5,
+        "answered_questions_limit": 3,
+        "subgoals_limit": 3,
+        "findings_limit": 5,
+        "calls_limit": 3,
+        "last_errors_limit": 3,
+    }
+
+
+def get_context_format() -> str:
+    """
+    Get the context format from config.
+    
+    Standalone version: returns "yaml" as default.
+    
+    Returns:
+        "yaml" | "legacy" | "json" - defaults to "yaml"
+    """
+    return "yaml"
+
+
+def get_show_token_budget_to_llm() -> bool:
+    """
+    Whether the LLM-facing [NAGATO_BOOT] block includes the tokens= budget line.
+    
+    Standalone version: returns False - token accounting becomes a CLI-only human display.
+    
+    Returns:
+        bool - defaults to False
+    """
+    return False
 
 
 def save_semantic_search_root(path: str, config_path: Optional[Path] = None) -> None:

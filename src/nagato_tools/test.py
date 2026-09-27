@@ -24,16 +24,8 @@ def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
 
 # V1 Suite Provider Architecture (optional, for gradual migration)
 try:
-    try:
-        from fsm.suite_dispatcher import run_suite_via_provider, get_latest_suite_result  # host-only
-    except (ImportError, Exception):
-        run_suite_via_provider = None  # type: ignore[misc]  # fsm-only; standalone gets None
-        get_latest_suite_result = None  # type: ignore[misc]  # fsm-only; standalone gets None
-    try:
-        from fsm.provider_loader import ProviderLoadError, load_provider_config  # host-only
-    except (ImportError, Exception):
-        ProviderLoadError = None  # type: ignore[misc]  # fsm-only; standalone gets None
-        load_provider_config = None  # type: ignore[misc]  # fsm-only; standalone gets None
+    from nagato_tools.suite_dispatcher import run_suite_via_provider, get_latest_suite_result
+    from nagato_tools.provider_loader import ProviderLoadError, load_provider_config
     PROVIDER_AVAILABLE = True
 except ImportError:
     PROVIDER_AVAILABLE = False
@@ -135,10 +127,7 @@ def _try_dispatch_suite_via_provider(
         )
         
         # Convert normalized result to legacy compat shape for host consumption
-        try:
-            from fsm.suite_contract import project_to_legacy_gold_status  # host-only
-        except (ImportError, Exception):
-            project_to_legacy_gold_status = None  # type: ignore[misc]  # fsm-only; standalone gets None
+        from nagato_tools.suite_contract import project_to_legacy_gold_status
         return project_to_legacy_gold_status(result)
         
     except ProviderLoadError:
