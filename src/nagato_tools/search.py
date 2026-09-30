@@ -1,3 +1,5 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -12,6 +14,17 @@ from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _check_irrelevance_guard
 from nagato_tools.semanticindex import SemanticIndexSearch
 from nagato_tools.token_calculator import estimate
+# Global thread pool for auto-indexing to avoid blocking the event loop
+_auto_index_executor: ThreadPoolExecutor | None = None
+
+
+def _get_auto_index_executor() -> ThreadPoolExecutor:
+    """Get or create the thread pool for auto-indexing work."""
+    global _auto_index_executor
+    if _auto_index_executor is None:
+        _auto_index_executor = ThreadPoolExecutor(max_workers=1)
+    return _auto_index_executor
+
 # Text file suffixes that are considered searchable
 SEARCHABLE_TEXT_SUFFIXES = frozenset({
     ".py", ".js", ".ts", ".txt", ".md", ".json", ".yaml", ".yml", ".html", ".css",
@@ -160,18 +173,46 @@ def _iter_plaintext_match_records(lines: list[str], query: str, file_label: str)
                 yield f"{file_label}:{line_number}: {line.strip()}"
 
 
-def _iter_searchable_text_files(target_dir: Path):
-    ignored_dirs = get_ignored_dirs()
-    for file_path in target_dir.rglob("*"):
-        if not file_path.is_file():
-            continue
+def _iter_searchable_text_files(target_dir: Path, workspace_root: Path = None, ctx: Any = None):
+    ignored_dirs = get_ignored_dirs(ctx=ctx)
+    
+    # Get search_dirs from config for whitelist mode
+    semantic_config = get_semantic_search_config(ctx=ctx)
+    search_dirs = semantic_config.search_dirs if semantic_config else []
+    
+    if search_dirs and workspace_root:
+        # Whitelist mode: only scan specified subdirectories
+        for search_dir in search_dirs:
+            search_path = (workspace_root / search_dir).resolve()
+            if not search_path.exists() or not search_path.is_dir():
+                continue
+            # Ensure search_path is within target_dir
+            try:
+                search_path.relative_to(target_dir)
+            except ValueError:
+                continue
+            
+            for file_path in search_path.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                relative_parts = file_path.relative_to(target_dir).parts[:-1]
+                if any(part in ignored_dirs or part.startswith(".") for part in relative_parts):
+                    continue
+                if file_path.suffix.lower() not in SEARCHABLE_TEXT_SUFFIXES:
+                    continue
+                yield file_path
+    else:
+        # Blacklist mode (default): scan everything except ignored_dirs
+        for file_path in target_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
 
-        relative_parts = file_path.relative_to(target_dir).parts[:-1]
-        if any(part in ignored_dirs or part.startswith(".") for part in relative_parts):
-            continue
-        if file_path.suffix.lower() not in SEARCHABLE_TEXT_SUFFIXES:
-            continue
-        yield file_path
+            relative_parts = file_path.relative_to(target_dir).parts[:-1]
+            if any(part in ignored_dirs or part.startswith(".") for part in relative_parts):
+                continue
+            if file_path.suffix.lower() not in SEARCHABLE_TEXT_SUFFIXES:
+                continue
+            yield file_path
 
 async def nagato_searchInFile(query: str, file: str, max_results: int = 5, start_offset: int = 0, _ctx: Optional[Any] = None) -> str:
     """
@@ -254,7 +295,7 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
     total_hits = 0
     files_scanned = 0
     window_end = start_offset + max_files
-    for file_path in _iter_searchable_text_files(target_dir):
+    for file_path in _iter_searchable_text_files(target_dir, workspace_root, ctx):
         files_scanned += 1
         relative_path = file_path.relative_to(workspace_root)
         with file_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -309,12 +350,18 @@ async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int =
         indexer = SemanticIndexSearch(config={
             "db_path": config.db_path,
             "embedding_model": config.embedding_model,
+            "docstring_only": config.docstring_only,
         })
         
-        # Auto-index check - pass ctx so it uses the resolved semantic search root
+        # Auto-index check - run in thread pool to avoid blocking the event loop
         auto_index_summary = ""
         try:
-            auto_index_summary = indexer.ensure_index_current(ctx=ctx)
+            loop = asyncio.get_running_loop()
+            executor = _get_auto_index_executor()
+            auto_index_summary = await loop.run_in_executor(
+                executor,
+                lambda: indexer.ensure_index_current(ctx=ctx)
+            )
         except Exception as e:
             print(f"Warning: Failed to ensure semantic index is current: {e}")
 
@@ -465,7 +512,12 @@ async def nagato_rebuild_symbol_db(dir: str = None, _ctx: Optional[Any] = None) 
         _ctx: Optional session context (injected by facade).    """
     ctx = _get_context(_ctx)
     try:
-        indexer = SemanticIndexSearch()
+        config = _get_semantic_config()
+        indexer = SemanticIndexSearch(config={
+            "db_path": config.db_path,
+            "embedding_model": config.embedding_model,
+            "docstring_only": config.docstring_only,
+        })
         result = indexer.rebuild_symbol_db(dir, ctx)
         return result
     except Exception as e:
@@ -525,7 +577,12 @@ async def nagato_set_semantic_search_root(path: str, _ctx: Optional[Any] = None)
         persistence_scope = "config base (.nagato/functions_config.json)"
     
     # Immediately reindex synchronously
-    indexer = SemanticIndexSearch()
+    config = _get_semantic_config()
+    indexer = SemanticIndexSearch(config={
+        "db_path": config.db_path,
+        "embedding_model": config.embedding_model,
+        "docstring_only": config.docstring_only,
+    })
     index_summary = indexer.index_directory_tree(str(target_path), external=is_external)
     
     # Build return message
