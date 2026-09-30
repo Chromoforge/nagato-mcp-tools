@@ -64,17 +64,19 @@ def _sanitize_session_id(session_id: str) -> str:
     return sanitized
 
 
-def _resolve_session_id(explicit_session_id: Optional[str] = None) -> str:
+def _resolve_session_id(explicit_session_id: Optional[str] = None, workspace_root: Optional[Path] = None) -> str:
     """
     Resolve the session ID from explicit parameter, environment variable, or default.
     
     Resolution order:
     1. Explicit session_id parameter
     2. NAGATO_SESSION_ID environment variable
-    3. Default "standalone"
+    3. Auto-generated from workspace_root (if provided) for isolation
+    4. Default "standalone"
     
     Args:
         explicit_session_id: Optional explicitly provided session ID
+        workspace_root: Optional workspace root for auto-generating session ID
         
     Returns:
         Resolved session ID string
@@ -84,6 +86,11 @@ def _resolve_session_id(explicit_session_id: Optional[str] = None) -> str:
     env_session_id = os.environ.get("NAGATO_SESSION_ID")
     if env_session_id:
         return env_session_id
+    # Auto-generate session_id from workspace for isolation when no explicit ID provided
+    if workspace_root is not None:
+        import hashlib
+        workspace_hash = hashlib.md5(str(Path(workspace_root).resolve()).encode()).hexdigest()[:8]
+        return f"ws_{workspace_hash}"
     return "standalone"
 
 
@@ -206,8 +213,8 @@ class MockFSMContext:
         """
         self._workspace_root = Path(workspace_root) if workspace_root is not None else Path.cwd()
         
-        # Resolve and sanitize session ID
-        raw_session_id = _resolve_session_id(session_id)
+        # Resolve and sanitize session ID (pass workspace_root for auto-generation)
+        raw_session_id = _resolve_session_id(session_id, self._workspace_root)
         self.session_id = _sanitize_session_id(raw_session_id)
         
         # Token limits loaded from config (linked: max_context_size = 80% of max_context_tokens by default)
@@ -245,8 +252,13 @@ class MockFSMContext:
     def workspace_root(self, value: Union[str, Path]) -> None:
         """Set workspace root and update undo/redo directories."""
         self._workspace_root = Path(value)
-        self._undo_dir = self._workspace_root / ".nagato" / "undo_cache"
-        self._redo_dir = self._workspace_root / ".nagato" / "redo_cache"
+        # Respect session_id when setting undo/redo directories
+        if self.session_id == "standalone":
+            self._undo_dir = self._workspace_root / ".nagato" / "undo_cache"
+            self._redo_dir = self._workspace_root / ".nagato" / "redo_cache"
+        else:
+            self._undo_dir = self._workspace_root / ".nagato" / "sessions" / self.session_id / "undo_cache"
+            self._redo_dir = self._workspace_root / ".nagato" / "sessions" / self.session_id / "redo_cache"
         self._undo_dir.mkdir(parents=True, exist_ok=True)
         self._redo_dir.mkdir(parents=True, exist_ok=True)
     
