@@ -9,6 +9,17 @@ from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.lint import nagato_lint, validate_content_syntax
 from nagato_tools.read import _check_irrelevance_guard
 from nagato_tools.semanticindex import SemanticIndexSearch
+from nagato_tools.config import get_semantic_search_config
+def _get_semantic_indexer() -> SemanticIndexSearch:
+    """Create a SemanticIndexSearch instance with current config (including docstring_only)."""
+    config = get_semantic_search_config()
+    return SemanticIndexSearch(config={
+        "db_path": config.db_path,
+        "embedding_model": config.embedding_model,
+        "docstring_only": config.docstring_only,
+    })
+
+
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
     """Get workspace root from context or fall back to config."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
@@ -203,9 +214,8 @@ async def nagato_edit(
         # Write replacement as full file content
         target_file.write_text(replacement, encoding="utf-8", newline="")
         ctx.mark_file_modified(file)
-
-        # SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
-        SemanticIndexSearch().update_symbol_tables_only(file)
+# SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
+        _get_semantic_indexer().update_symbol_tables_only(file)
         sync_queued = None  # Insight disabled
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
@@ -302,10 +312,7 @@ async def nagato_edit(
         # newline="" disables Windows os.linesep translation; content already
         # carries its original \n/\r\n bytes verbatim from the manual decode above.
         target_file.write_text(new_content, encoding="utf-8", newline="")
-        ctx.mark_file_modified(file)
-
-        # SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
-        SemanticIndexSearch().update_symbol_tables_only(file)
+        _get_semantic_indexer().update_symbol_tables_only(file)
         sync_queued = None  # Insight disabled
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
@@ -381,12 +388,9 @@ async def nagato_edit_lines(
         if action_context is not None and hasattr(action_context, "record_file_change"):
             action_context.record_file_change(file, before_content=None, after_content=new_code, is_new=True)
         
-        # Write new_code as full file content
-        target_file.write_text(new_code, encoding="utf-8", newline="")
-        ctx.mark_file_modified(file)
+# SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
+        _get_semantic_indexer().update_symbol_tables_only(file)
 
-        # SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
-        SemanticIndexSearch().update_symbol_tables_only(file)
         sync_queued = None  # Insight disabled
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
@@ -548,7 +552,7 @@ async def nagato_edit_lines(
         target_file.write_text(new_content_for_undo, encoding="utf-8", newline="")
         ctx.mark_file_modified(file)
 
-        SemanticIndexSearch().update_symbol_tables_only(file)
+        _get_semantic_indexer().update_symbol_tables_only(file)
         sync_queued = None  # Insight disabled
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
@@ -620,7 +624,7 @@ async def nagato_delete(
         target_file.unlink()
 
         # Update symbol index
-        SemanticIndexSearch().update_symbol_tables_only(file)
+        _get_semantic_indexer().update_symbol_tables_only(file)
         sync_queued = None  # Insight disabled
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
@@ -707,8 +711,8 @@ async def nagato_rename(
                 raise
         
         # Update symbol index for both files
-        SemanticIndexSearch().update_symbol_tables_only(source)
-        SemanticIndexSearch().update_symbol_tables_only(destination)
+        _get_semantic_indexer().update_symbol_tables_only(source)
+        _get_semantic_indexer().update_symbol_tables_only(destination)
         sync_queued_source = None  # Insight disabled
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued_source)
