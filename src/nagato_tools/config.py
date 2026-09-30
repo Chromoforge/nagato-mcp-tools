@@ -17,6 +17,18 @@ DEFAULT_IGNORED_DIRS = (
 )
 
 
+def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
+    """Get workspace root from context or fall back to current working directory."""
+    if ctx is not None and hasattr(ctx, 'workspace_root'):
+        return ctx.workspace_root
+    return get_workspace_root()
+
+
+def get_workspace_root() -> Path:
+    """Get the workspace root directory (current working directory as fallback)."""
+    return Path.cwd()
+
+
 @dataclass
 class SemanticSearchConfig:
     """Configuration for semantic search functionality."""
@@ -26,6 +38,8 @@ class SemanticSearchConfig:
     dimension: int = 768  # Jina default, will be updated based on model
     auto_index: bool = True
     search_root: str = ""  # Optional override for semantic search base directory
+    search_dirs: list[str] = field(default_factory=list)  # Optional whitelist of subdirs to index (relative to search_root)
+    docstring_only: bool = False  # If True, only embed docstrings instead of full function/class bodies
 
     def __post_init__(self):
         # Set dimension based on model if not explicitly set
@@ -77,6 +91,8 @@ class FunctionsConfig:
                 dimension=ss_data.get("dimension", 768),
                 auto_index=ss_data.get("auto_index", True),
                 search_root=ss_data.get("search_root", ""),
+                search_dirs=ss_data.get("search_dirs", []),
+                docstring_only=ss_data.get("docstring_only", False),
             )
         if "lint" in data:
             lint_data = data["lint"]
@@ -101,23 +117,24 @@ def get_workspace_root() -> Path:
         return Path.cwd()
 
 
-def get_config_path() -> Path:
+def get_config_path(ctx: Optional[Any] = None) -> Path:
     """Get the path to the functions config file."""
-    return get_workspace_root() / ".nagato" / "functions_config.json"
+    return _get_workspace_root(ctx) / ".nagato" / "functions_config.json"
 
 
-def load_functions_config(config_path: Optional[Path] = None) -> FunctionsConfig:
+def load_functions_config(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> FunctionsConfig:
     """
     Load functions configuration from JSON file.
     
     Args:
         config_path: Optional custom path to config file. Defaults to .nagato/functions_config.json
+        ctx: Optional session context for workspace root resolution
         
     Returns:
         FunctionsConfig with loaded values or defaults
     """
     if config_path is None:
-        config_path = get_config_path()
+        config_path = get_config_path(ctx)
     
     if not config_path.exists():
         return FunctionsConfig()  # Return defaults
@@ -132,19 +149,19 @@ def load_functions_config(config_path: Optional[Path] = None) -> FunctionsConfig
         return FunctionsConfig()
 
 
-def get_semantic_search_config(config_path: Optional[Path] = None) -> SemanticSearchConfig:
+def get_semantic_search_config(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> SemanticSearchConfig:
     """Get semantic search configuration with defaults."""
-    return load_functions_config(config_path).semantic_search
+    return load_functions_config(config_path, ctx).semantic_search
 
 
-def get_lint_config(config_path: Optional[Path] = None) -> LintConfig:
+def get_lint_config(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> LintConfig:
     """Get lint configuration with defaults."""
-    return load_functions_config(config_path).lint
+    return load_functions_config(config_path, ctx).lint
 
 
-def get_ignored_dirs(config_path: Optional[Path] = None) -> frozenset[str]:
+def get_ignored_dirs(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> frozenset[str]:
     """Get ignored directories set as a frozenset."""
-    return frozenset(load_functions_config(config_path).ignored_dirs)
+    return frozenset(load_functions_config(config_path, ctx).ignored_dirs)
 
 
 def get_insight_config(config_path: Optional[Path] = None) -> dict:
@@ -462,7 +479,7 @@ def resolve_semantic_search_root(ctx=None, workspace_root: Optional[Path] = None
     
     # 2. Config file base
     config_path = workspace_root / ".nagato" / "functions_config.json"
-    config = load_functions_config(config_path)
+    config = load_functions_config(config_path, ctx)
     search_root = config.semantic_search.search_root
     if search_root:
         search_path = Path(search_root)
