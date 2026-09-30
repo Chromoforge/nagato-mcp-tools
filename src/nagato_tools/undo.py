@@ -424,9 +424,11 @@ async def nagato_undo_standalone(
 
     # Ensure ctx has undo_dir and redo_dir attributes
     if not hasattr(ctx, 'undo_dir'):
-        ctx.undo_dir = Path.cwd() / ".nagato" / "undo_cache"
+        workspace_root = getattr(ctx, 'workspace_root', Path.cwd())
+        ctx.undo_dir = workspace_root / ".nagato" / "undo_cache"
     if not hasattr(ctx, 'redo_dir'):
-        ctx.redo_dir = Path.cwd() / ".nagato" / "redo_cache"
+        workspace_root = getattr(ctx, 'workspace_root', Path.cwd())
+        ctx.redo_dir = workspace_root / ".nagato" / "redo_cache"
 
     # Ensure directories exist
     ctx.undo_dir.mkdir(parents=True, exist_ok=True)
