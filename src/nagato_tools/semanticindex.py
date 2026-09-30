@@ -1,10 +1,148 @@
 import ast
 import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+# Global thread pool for CPU-intensive embedding work (avoids blocking server thread)
+_embedding_executor: ThreadPoolExecutor | None = None
+
+
+def _embed_texts(model, texts, batch_size: int = 32, parallel: int = 1):
+    """Module-level helper for thread-pool embedding with streaming support.
+    
+    Uses small batch_size and parallel=1 to avoid memory explosion.
+    Returns a generator that yields embeddings one at a time.
+    """
+    return model.embed(texts, batch_size=batch_size, parallel=parallel)
+
+
+def _get_embedding_executor() -> ThreadPoolExecutor:
+    """Get or create the process pool for embedding work."""
+    global _embedding_executor
+    if _embedding_executor is None:
+        _embedding_executor = ThreadPoolExecutor(max_workers=1)
+    return _embedding_executor
+
+
+def _split_large_chunk_ast_aware(source_code: str, node: ast.AST, max_chars: int) -> list[str]:
+    """Split a large AST node into smaller chunks at logical boundaries.
+    
+    Tries to split at:
+    1. Inner function/class definitions
+    2. Top-level statements (assignments, expressions)
+    3. Falls back to hard truncation with warning
+    
+    Args:
+        source_code: Full source code of the file
+        node: The AST node (FunctionDef, AsyncFunctionDef, or ClassDef)
+        max_chars: Maximum characters per chunk
+        
+    Returns:
+        List of chunk strings, each ≤ max_chars
+    """
+    segment = ast.get_source_segment(source_code, node)
+    if not segment or len(segment) <= max_chars:
+        return [segment] if segment else []
+    
+    # Try to find inner nodes we can split on
+    inner_nodes = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            inner_nodes.append(child)
+    
+    if inner_nodes:
+        # Split at inner function/class boundaries
+        chunks = []
+        current_chunk = []
+        current_len = 0
+        
+        # Get all lines of the segment
+        lines = segment.splitlines(keepends=True)
+        
+        # Map line numbers to inner nodes
+        inner_by_line = {}
+        for inner in inner_nodes:
+            inner_seg = ast.get_source_segment(source_code, inner)
+            if inner_seg:
+                start_line = inner.lineno - node.lineno  # relative to segment
+                inner_by_line[start_line] = inner
+        
+        for i, line in enumerate(lines):
+            rel_line = i + 1
+            if rel_line in inner_by_line and current_chunk:
+                # Start new chunk at inner node boundary
+                chunk_text = ''.join(current_chunk)
+                if len(chunk_text) <= max_chars:
+                    chunks.append(chunk_text)
+                else:
+                    # Chunk still too large, hard truncate with warning
+                    logger.warning(f"Chunk for {node.name} exceeds {max_chars} chars even after AST split, truncating")
+                    chunks.append(chunk_text[:max_chars])
+                current_chunk = [line]
+                current_len = len(line)
+            else:
+                current_chunk.append(line)
+                current_len += len(line)
+        
+        # Add remaining
+        if current_chunk:
+            chunk_text = ''.join(current_chunk)
+            if len(chunk_text) <= max_chars:
+                chunks.append(chunk_text)
+            else:
+                logger.warning(f"Final chunk for {node.name} exceeds {max_chars} chars, truncating")
+                chunks.append(chunk_text[:max_chars])
+        
+        return chunks
+    
+    # No inner nodes to split on - try splitting at top-level statements
+    # This is a fallback for very large functions without nested functions
+    try:
+        # Find statement boundaries (simplified: look for lines with low indentation)
+        lines = segment.splitlines(keepends=True)
+        if len(lines) > 50:  # Only try for very large functions
+            chunks = []
+            current_chunk = []
+            current_len = 0
+            
+            for line in lines:
+                stripped = line.lstrip()
+                indent = len(line) - len(stripped)
+                # Split at low-indentation statements (top-level in function)
+                if indent <= 4 and stripped and not stripped.startswith('#') and current_chunk and current_len > max_chars // 2:
+                    chunk_text = ''.join(current_chunk)
+                    if len(chunk_text) <= max_chars:
+                        chunks.append(chunk_text)
+                    else:
+                        logger.warning(f"Chunk for {node.name} exceeds {max_chars} chars, truncating")
+                        chunks.append(chunk_text[:max_chars])
+                    current_chunk = [line]
+                    current_len = len(line)
+                else:
+                    current_chunk.append(line)
+                    current_len += len(line)
+            
+            if current_chunk:
+                chunk_text = ''.join(current_chunk)
+                if len(chunk_text) <= max_chars:
+                    chunks.append(chunk_text)
+                else:
+                    logger.warning(f"Final chunk for {node.name} exceeds {max_chars} chars, truncating")
+                    chunks.append(chunk_text[:max_chars])
+            
+            if chunks:
+                return chunks
+    except Exception:
+        pass
+    
+    # Ultimate fallback: hard truncate with warning
+    logger.warning(f"Function/class {node.name} exceeds {max_chars} chars and cannot be split cleanly, truncating")
+    return [segment[:max_chars]]
+
 
 from nagato_tools.config import (
     get_ignored_dirs,
@@ -208,6 +346,17 @@ class EmbeddingModels:
             kwargs["cache_dir"] = self.cache_dir
         return TextEmbedding(**kwargs)
 
+    def get_max_chunk_chars(self) -> int:
+        """Returns the maximum chunk size in characters based on model's max_length.
+        
+        Approximates: 1 token ≈ 4 characters for code.
+        """
+        if self.model == "baai":
+            return 512 * 4  # ~2048 chars
+        elif self.model == "jina":
+            return 2048 * 4  # ~8192 chars
+        return 8000  # fallback
+
 
 class SemanticIndexSearch:
     """Enables semantic vector search over a codebase using SQLite and sqlite-vec.
@@ -238,18 +387,20 @@ class SemanticIndexSearch:
         
         # Load configuration
         if config is None:
-            config_obj = get_semantic_search_config()
+            config_obj = get_semantic_search_config(ctx=ctx)
             workspace_root = _get_workspace_root(ctx)
             self.db_path = resolve_db_path(config_obj, workspace_root)
             self.embedding_model = config_obj.embedding_model
             self.dimension = config_obj.dimension
             self.model_cache_dir = config_obj.model_cache_dir
+            self.docstring_only = config_obj.docstring_only
         else:
             workspace_root = _get_workspace_root(ctx)
-            self.db_path = config.get("db_path") or resolve_db_path(get_semantic_search_config(), workspace_root)
+            self.db_path = config.get("db_path") or resolve_db_path(get_semantic_search_config(ctx=ctx), workspace_root)
             self.embedding_model = config.get("embedding_model", "jina")
             self.dimension = 384 if self.embedding_model == "baai" else 768
             self.model_cache_dir = config.get("model_cache_dir", "")
+            self.docstring_only = config.get("docstring_only", False)
             
         self.init_vector_db(self.db_path)
 
@@ -369,8 +520,10 @@ class SemanticIndexSearch:
                 )
 
     
-            # Embed the search term and convert to bytes
-            query_vec = list(self.Model.embed([query_str]))[0]
+            # Embed the search term and convert to bytes (offload to thread pool)
+            executor = _get_embedding_executor()
+            future = executor.submit(_embed_texts, self.Model, [query_str], 32, 1)
+            query_vec = next(future.result())
             # Convert to float32 for sqlite-vec (expects 4 bytes per float)
             query_vec_f32 = query_vec.astype(np.float32)
             query_vec_bytes = query_vec_f32.tobytes()
@@ -456,20 +609,38 @@ class SemanticIndexSearch:
             logger.error(f"AST analysis failed for {stored_path}: {str(e)}")
             raise  # Re-raise to ensure the error is not silently ignored
 
-        # 2. Collect logical code chunks for vector search
+        # 2. Collect logical code chunks for vector search (AST-aware splitting)
         chunks, metas = [], []
+        max_chunk_chars = self._model_wrapper.get_max_chunk_chars() if self._model_wrapper else 8000
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                segment = ast.get_source_segment(source_code, node)
-                if segment:
-                    # Truncate chunks to max 8000 characters to prevent ONNX runtime out-of-memory errors on massive files
-                    chunk_text = segment[:8000]
-                    chunks.append(chunk_text)
-                    metas.append({
-                        "file": stored_path,
-                        "line": node.lineno,
-                        "name": node.name,
-                    })
+                if getattr(self, "docstring_only", False):
+                    # Docstring-only mode: embed only the docstring
+                    doc = ast.get_docstring(node)
+                    if doc:
+                        chunks.append(doc)
+                        metas.append({
+                            "file": stored_path,
+                            "line": node.lineno,
+                            "name": node.name,
+                        })
+                else:
+                    # Full code mode (default): embed the entire function/class body
+                    segment = ast.get_source_segment(source_code, node)
+                    if segment:
+                        # Use AST-aware splitting for large chunks
+                        if len(segment) <= max_chunk_chars:
+                            chunk_texts = [segment]
+                        else:
+                            chunk_texts = _split_large_chunk_ast_aware(source_code, node, max_chunk_chars)
+                        
+                        for chunk_text in chunk_texts:
+                            chunks.append(chunk_text)
+                            metas.append({
+                                "file": stored_path,
+                                "line": node.lineno,
+                                "name": node.name,
+                            })
 
         # Write DB entries
         with self.conn:
@@ -487,9 +658,9 @@ class SemanticIndexSearch:
 
             # A) Write vector index (if chunks are present and vector support enabled)
             if chunks and self.has_vector_support:
-                # Stream embeddings to avoid loading all into memory at once
-                # batch_size=32 keeps memory low; parallel=None uses onnxruntime threading (no multiprocessing)
-                for code, meta, vec in zip(chunks, metas, self.Model.embed(chunks, batch_size=32, parallel=None)):
+                # Stream embeddings directly to database to avoid memory explosion
+                # Use small batch_size=32 and parallel=1 to keep memory usage low
+                for code, meta, vec in zip(chunks, metas, self.Model.embed(chunks, batch_size=32, parallel=1)):
                     cursor.execute(
                         "INSERT INTO code_chunks (file_path, line_number, content) VALUES (?, ?, ?)",
                         (meta["file"], meta["line"], f"# {meta['name']}\n{code}"),
@@ -574,15 +745,39 @@ class SemanticIndexSearch:
             if not target_root.exists() or not target_root.is_dir():
                 return f"ERROR: {root_dir} does not exist or is not a directory."
 
-        ignored_dirs = get_ignored_dirs()
+        ignored_dirs = get_ignored_dirs(ctx=ctx)
+        
+        # Get search_dirs from config for whitelist mode (only applies in workspace mode, not external)
+        semantic_config = get_semantic_search_config(ctx=ctx) if not external else None
+        search_dirs = semantic_config.search_dirs if semantic_config else []
         
         # Collect files first for progress tracking
         python_files = []
-        for file_path in target_root.rglob("*.py"):
-            parts = file_path.relative_to(target_root).parts
-            if any(part in ignored_dirs or part.startswith(".") for part in parts):
-                continue
-            python_files.append(file_path)
+        
+        if search_dirs and not external:
+            # Whitelist mode: only scan specified subdirectories
+            for search_dir in search_dirs:
+                search_path = (workspace_root / search_dir).resolve()
+                if not search_path.exists() or not search_path.is_dir():
+                    continue
+                # Ensure search_path is within target_root
+                try:
+                    search_path.relative_to(target_root)
+                except ValueError:
+                    continue
+                
+                for file_path in search_path.rglob("*.py"):
+                    parts = file_path.relative_to(target_root).parts
+                    if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                        continue
+                    python_files.append(file_path)
+        else:
+            # Blacklist mode (default): scan everything except ignored_dirs
+            for file_path in target_root.rglob("*.py"):
+                parts = file_path.relative_to(target_root).parts
+                if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                    continue
+                python_files.append(file_path)
         
         indexed_count = 0
         skipped_count = 0
@@ -714,24 +909,61 @@ class SemanticIndexSearch:
 
         # Collect Python files to process
         python_files = []
-        ignored_dirs = get_ignored_dirs()
+        ignored_dirs = get_ignored_dirs(ctx=ctx)
+        semantic_config = get_semantic_search_config(ctx=ctx)
+        search_dirs = semantic_config.search_dirs if semantic_config else []
         
-        # Scan target directory for Python files
-        for file_path in scan_root.rglob("*.py"):
-            # For files under workspace_root, check ignored_dirs using workspace-relative parts
-            # For external files, check ignored_dirs using parts relative to scan_root
-            if scan_root.is_relative_to(workspace_root):
+        if search_dirs:
+            # Whitelist mode: only scan specified subdirectories
+            for search_dir in search_dirs:
+                search_path = (workspace_root / search_dir).resolve()
+                if not search_path.exists() or not search_path.is_dir():
+                    continue
+                # Ensure search_path is within workspace_root (or scan_root if target_dir specified)
+                base_root = scan_root if target_dir else workspace_root
                 try:
-                    parts = file_path.relative_to(workspace_root).parts
+                    search_path.relative_to(base_root)
                 except ValueError:
-                    # File is outside workspace_root (shouldn't happen in this branch)
-                    parts = file_path.relative_to(scan_root).parts
-            else:
-                parts = file_path.relative_to(scan_root).parts
+                    # search_dir points outside allowed root, skip
+                    continue
                 
-            if any(part in ignored_dirs or part.startswith(".") for part in parts):
-                continue
-            python_files.append(file_path)
+                # Check if the search_dir itself is in ignored_dirs - if so, skip it (ignored_dirs wins)
+                search_dir_name = search_dir.rstrip('/')
+                if search_dir_name in ignored_dirs:
+                    continue
+                
+                for file_path in search_path.rglob("*.py"):
+                    # In whitelist mode, we don't apply ignored_dirs to the whitelisted paths themselves.
+                    # The whitelist takes precedence. We only filter out hidden dirs (starting with .)
+                    if scan_root.is_relative_to(workspace_root):
+                        try:
+                            parts = file_path.relative_to(workspace_root).parts
+                        except ValueError:
+                            parts = file_path.relative_to(scan_root).parts
+                    else:
+                        parts = file_path.relative_to(scan_root).parts
+                    
+                    # Only skip hidden directories (starting with .)
+                    if any(part.startswith(".") for part in parts):
+                        continue
+                    python_files.append(file_path)
+        else:
+            # Blacklist mode (default): scan everything except ignored_dirs
+            for file_path in scan_root.rglob("*.py"):
+                # For files under workspace_root, check ignored_dirs using workspace-relative parts
+                # For external files, check ignored_dirs using parts relative to scan_root
+                if scan_root.is_relative_to(workspace_root):
+                    try:
+                        parts = file_path.relative_to(workspace_root).parts
+                    except ValueError:
+                        # File is outside workspace_root (shouldn't happen in this branch)
+                        parts = file_path.relative_to(scan_root).parts
+                else:
+                    parts = file_path.relative_to(scan_root).parts
+                    
+                if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                    continue
+                python_files.append(file_path)
         
         # Delete existing data for these files
         with self.conn:
@@ -771,7 +1003,7 @@ class SemanticIndexSearch:
                 
                 logger.info(f"Indexing [{i+1}/{total_files}]: {file_rel_path}")
                 
-                res = self.nagato_index_file_semantic(file_rel_path)
+                res = self.nagato_index_file_semantic(file_rel_path, ctx)
                 if "Indexed:" in res:
                     indexed_count += 1
                 else:
@@ -854,39 +1086,91 @@ class SemanticIndexSearch:
                     ledger[fp] = m_time
 
             to_reindex = []
-            ignored_dirs = get_ignored_dirs()
+            ignored_dirs = get_ignored_dirs(ctx=ctx)
             current_files_rel = set()
-
-            for file_path in scan_root.rglob("*.py"):
-                # For files under workspace_root, check ignored_dirs using workspace-relative parts
-                # For external files, check ignored_dirs using parts relative to scan_root
-                if scan_root.is_relative_to(workspace_root):
+            
+            # Get search_dirs from config for whitelist mode
+            semantic_config = get_semantic_search_config(ctx=ctx)
+            search_dirs = semantic_config.search_dirs if semantic_config else []
+            
+            if search_dirs:
+                # Whitelist mode: only scan specified subdirectories
+                for search_dir in search_dirs:
+                    search_path = (workspace_root / search_dir).resolve()
+                    if not search_path.exists() or not search_path.is_dir():
+                        continue
+                    base_root = scan_root if target_dir else workspace_root
                     try:
-                        parts = file_path.relative_to(workspace_root).parts
+                        search_path.relative_to(base_root)
                     except ValueError:
+                        continue
+                    
+                    # Check if the search_dir itself is in ignored_dirs - if so, skip it (ignored_dirs wins)
+                    search_dir_name = search_dir.rstrip('/')
+                    if search_dir_name in ignored_dirs:
+                        continue
+                    
+                    for file_path in search_path.rglob("*.py"):
+                        if scan_root.is_relative_to(workspace_root):
+                            try:
+                                parts = file_path.relative_to(workspace_root).parts
+                            except ValueError:
+                                parts = file_path.relative_to(scan_root).parts
+                        else:
+                            parts = file_path.relative_to(scan_root).parts
+                        
+                        # Only skip hidden directories (starting with .)
+                        if any(part.startswith(".") for part in parts):
+                            continue
+                        
+                        if scan_root.is_relative_to(workspace_root):
+                            file_rel_path = str(file_path.relative_to(workspace_root).as_posix())
+                        else:
+                            file_rel_path = file_path.resolve().as_posix()
+                            
+                        current_files_rel.add(file_rel_path)
+                        
+                        try:
+                            mtime = file_path.stat().st_mtime
+                        except Exception:
+                            mtime = 0.0
+                        
+                        if file_rel_path not in ledger:
+                            to_reindex.append(file_rel_path)
+                        elif mtime > ledger[file_rel_path]:
+                            to_reindex.append(file_rel_path)
+            else:
+                # Blacklist mode (default): scan everything except ignored_dirs
+                for file_path in scan_root.rglob("*.py"):
+                    # For files under workspace_root, check ignored_dirs using workspace-relative parts
+                    # For external files, check ignored_dirs using parts relative to scan_root
+                    if scan_root.is_relative_to(workspace_root):
+                        try:
+                            parts = file_path.relative_to(workspace_root).parts
+                        except ValueError:
+                            parts = file_path.relative_to(scan_root).parts
+                    else:
                         parts = file_path.relative_to(scan_root).parts
-                else:
-                    parts = file_path.relative_to(scan_root).parts
+                        
+                    if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                        continue
                     
-                if any(part in ignored_dirs or part.startswith(".") for part in parts):
-                    continue
-                
-                if scan_root.is_relative_to(workspace_root):
-                    file_rel_path = str(file_path.relative_to(workspace_root).as_posix())
-                else:
-                    file_rel_path = file_path.resolve().as_posix()
+                    if scan_root.is_relative_to(workspace_root):
+                        file_rel_path = str(file_path.relative_to(workspace_root).as_posix())
+                    else:
+                        file_rel_path = file_path.resolve().as_posix()
+                        
+                    current_files_rel.add(file_rel_path)
                     
-                current_files_rel.add(file_rel_path)
-                
-                try:
-                    mtime = file_path.stat().st_mtime
-                except Exception:
-                    mtime = 0.0
-                
-                if file_rel_path not in ledger:
-                    to_reindex.append(file_rel_path)
-                elif mtime > ledger[file_rel_path]:
-                    to_reindex.append(file_rel_path)
+                    try:
+                        mtime = file_path.stat().st_mtime
+                    except Exception:
+                        mtime = 0.0
+                    
+                    if file_rel_path not in ledger:
+                        to_reindex.append(file_rel_path)
+                    elif mtime > ledger[file_rel_path]:
+                        to_reindex.append(file_rel_path)
 
             # Purge deleted files
             to_purge = []
