@@ -24,8 +24,11 @@ b) **Session-scoped via `NAGATO_SESSION_ID`**
    environment variable or `--session-id` flag (e.g. `proj:my-app`). Default if unset: `"standalone"`.
 
 c) **Persistent AST symbol database:
+
    - A lightweight **AST symbol database** (plain SQLite, no embeddings, no LLM involved) behind
+
      `nagato_read_signatures` / `nagato_extract_callers` / `nagato_extract_callees`. Built and
+
      refreshed on demand with `nagato_rebuild_symbol_db`.**
 
 d) **Flat tool surface**

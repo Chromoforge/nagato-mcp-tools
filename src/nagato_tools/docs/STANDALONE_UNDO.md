@@ -4,6 +4,24 @@ The Nagato Tools suite provides a dedicated, lightweight, persistent version-tra
 
 ---
 
+## ⏪ Session & Workspace Isolation
+
+The undo system maintains **isolated undo/redo caches per `(workspace, session_id)` pair**. This enables safe concurrent usage by multiple agents:
+
+| Configuration | Session ID | Undo Cache Location | Redo Cache Location |
+|---------------|------------|---------------------|---------------------|
+| Default (no session_id) | Auto-generated from workspace hash (e.g., `ws_a1b2c3d4`) | `.nagato/sessions/ws_a1b2c3d4/undo_cache/` | `.nagato/sessions/ws_a1b2c3d4/redo_cache/` |
+| `NAGATO_SESSION_ID=proj:my-app` | `proj_my-app` (sanitized) | `.nagato/sessions/proj_my-app/undo_cache/` | `.nagato/sessions/proj_my-app/redo_cache/` |
+| Explicit `session_id="standalone"` | `standalone` | `.nagato/undo_cache/` | `.nagato/redo_cache/` |
+
+### Concurrency Model
+
+- **Different workspaces**: Naturally isolated by different workspace roots
+- **Same workspace, different session_ids**: Isolated via `.nagato/sessions/<session_id>/` — each agent gets its own undo stream
+- **Same workspace, same session_id**: Share undo cache (intentional for collaborative editing)
+
+---
+
 ## 1. What It Can Do
 
 The Undo system tracks file modifications, file creations, file renames, and file deletions:
@@ -18,16 +36,29 @@ The Undo system tracks file modifications, file creations, file renames, and fil
 
 ## 2. Architecture & Storage
 
-The system operates via a disk-backed file-snapshot stack:
+The system operates via a disk-backed file-snapshot stack, scoped to the session:
 
 ```
 Workspace Root/
   └── .nagato/
+        ├── sessions/
+        │     └── <session_id>/
+        │           ├── undo_cache/
+        │           │     ├── snapshot_1700000001000.json
+        │           │     └── snapshot_1700000002000.json  <-- Latest edit
+        │           └── redo_cache/
+        │                 └── snapshot_1700000003000.json  <-- Moved here upon undo
+        └── (legacy standalone session)
+              ├── undo_cache/
+              └── redo_cache/
+```
+
+For the default `standalone` session (or when explicitly set), the legacy flat structure is used:
+```
+Workspace Root/
+  └── .nagato/
         ├── undo_cache/
-        │     ├── snapshot_1700000001000.json
-        │     └── snapshot_1700000002000.json  <-- Latest edit
         └── redo_cache/
-              └── snapshot_1700000003000.json  <-- Moved here upon undo
 ```
 
 ### Snapshot Structure

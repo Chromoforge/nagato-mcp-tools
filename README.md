@@ -99,6 +99,7 @@ nagato-ui --workspace /path/to/your/project --session-id proj:my-app --port 8085
 When using Nagato tools across multiple repositories/projects, you can prevent cross-project pollution using **formatted `session_id` values**:
 
 * **Project Session**: `proj:<project-name>` (e.g. `proj:backend-api`, `proj:mobile-app`) — isolates audit telemetry and undo snapshots per project.
+* **Zero-Config Isolation**: If no `session_id` is provided, one is auto-generated from the workspace path hash (e.g., `ws_a1b2c3d4`), giving each workspace its own isolated undo/redo caches and telemetry.
 
 * **Default Session**: `standalone` (fallback) — single-workspace zero-config default.
 * **FSM Ephemeral Session**: Standard UUID4 (e.g. `550e8400-e29b-41d4...`) — managed turn-by-turn orchestration.
@@ -121,6 +122,63 @@ On startup with the toggle on, the standalone router logs a line like:
 [nagato] standalone router ready: session_id='proj_my-app' (raw='proj:my-app') workspace=/path/to/project
 [nagato] session-id sanitized: 'proj:my-app' -> 'proj_my-app'
 ```
+
+---
+
+## ⏪ Undo/Redo Session & Workspace Isolation
+
+The standalone undo system (`nagato_undo_standalone`) maintains **isolated undo/redo caches per `(workspace, session_id)` pair**. This enables safe concurrent usage by multiple agents:
+
+| Configuration | Session ID | Undo Cache Location | Redo Cache Location |
+|---------------|------------|---------------------|---------------------|
+| Default (no session_id) | Auto-generated from workspace hash (e.g., `ws_a1b2c3d4`) | `.nagato/sessions/ws_a1b2c3d4/undo_cache/` | `.nagato/sessions/ws_a1b2c3d4/redo_cache/` |
+| `NAGATO_SESSION_ID=proj:my-app` | `proj_my-app` (sanitized) | `.nagato/sessions/proj_my-app/undo_cache/` | `.nagato/sessions/proj_my-app/redo_cache/` |
+| Explicit `session_id="standalone"` | `standalone` | `.nagato/undo_cache/` | `.nagato/redo_cache/` |
+
+### Concurrency Model
+
+- **Different workspaces**: Naturally isolated by different workspace roots
+- **Same workspace, different session_ids**: Isolated via `.nagato/sessions/<session_id>/` — each agent gets its own undo stream
+- **Same workspace, same session_id**: Share undo cache (intentional for collaborative editing)
+
+### MCP Client Configuration for Concurrent Agents
+
+Each agent should configure its own `session_id` in `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "nagato-tools": {
+      "type": "stdio",
+      "command": "nagato-mcp-tools",
+      "args": [
+        "--workspace", "${workspaceFolder}",
+        "--session-id", "proj:agent-1"
+      ]
+    }
+  }
+}
+```
+
+Or via environment variable:
+```json
+{
+  "servers": {
+    "nagato-tools": {
+      "type": "stdio",
+      "command": "nagato-mcp-tools",
+      "args": ["--workspace", "${workspaceFolder}"],
+      "env": {
+        "NAGATO_SESSION_ID": "proj:agent-1"
+      }
+    }
+  }
+}
+```
+
+### Zero-Config Isolation
+
+If no `session_id` is provided, the system auto-generates one from the workspace path hash. This means **each workspace automatically gets isolated undo history** without any configuration.
 
 ---
 
@@ -192,7 +250,7 @@ The instructions guide the LLM to:
 | **Search** | `nagato_searchAST`<br>`nagato_searchInFile`<br>`nagato_searchInFiles`<br>`nagato_find_file`<br>`nagato_semantic_search`<br>`nagato_rebuild_symbol_db`<br>`nagato_set_semantic_search_root` | Search symbols via AST, plain substring search in single/multiple files, filename lookup, and vector semantic search. |
 | **Inspection** | `nagato_read_file`<br>`nagato_read_lines`<br>`nagato_list_dir`<br>`nagato_read_signatures`<br>`nagato_extract_callees`<br>`nagato_extract_callers` | Inspect file content and line ranges, extract signatures, and inspect call graphs (callers & callees). |
 | **Editing** | `nagato_edit`<br>`nagato_edit_lines`<br>`nagato_delete`<br>`nagato_rename`<br>`nagato_create_dir` | Target exact string replacement, line-range editing, rename/delete files, create directories. |
-| **Undo/Redo** | `nagato_undo_standalone` | Granular undo/redo with multi-mode support (steps, time, command, step-target). |
+| **Undo/Redo** | `nagato_undo_standalone` | Granular undo/redo with multi-mode support (steps, time, command, step-target). **Session-scoped**: Each `(workspace, session_id)` pair maintains isolated undo/redo caches under `.nagato/sessions/<session_id>/undo_cache` and `.nagato/sessions/<session_id>/redo_cache`. Default `standalone` session uses `.nagato/undo_cache` and `.nagato/redo_cache`. |
 | **Execution** | `nagato_execute_snippet` | Execute Python snippets with subprocess isolation and timeout limits. |
 | **Lint & Quality** | `nagato_lint` | Syntax checking and automated Ruff linting. |
 | **Testing** | `nagato_run_test`<br>`nagato_run_gold_full`<br>`nagato_run_configured_suite` | Run single pytest test nodes or configured test suites. |
