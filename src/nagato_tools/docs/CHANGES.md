@@ -2,6 +2,45 @@
 
 Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## [0.2.3] - 2026-10-07
+
+### Added
+- **Redundant Read Detection** (`config.py`, `ctx_mock.py`, `read.py`): New `redundant_read_detection.enabled` config option (default: `true`). When enabled, `nagato_read_file` and `nagato_read_lines` track file reads and prepend a warning if the same unchanged file is read again without intervening edits or disk changes. Agent edits via `nagato_edit`/`nagato_edit_lines` reset the warning; external file modifications (mtime/hash change) also reset it.
+- **Hierarchical Compound Nodes in WebUI** (`webui_dist/`): Insight Graph now renders AST containment hierarchies as collapsible containers (Domains → Concepts → Components → Files). Double-click to expand/collapse; clickable breadcrumb trail for instant navigation.
+- **Session Listing API** (`telemetry.py`, `ui_server.py`): New `list_standalone_sessions()` function and `/api/v1/standalone/sessions` REST endpoint to enumerate all available standalone sessions with undo/redo/audit status.
+- **Concept Batch Tool** (`facade.py`, `tool_categories.py`): Added `nagato_concept_batch` to the list of action-journal-tracked tools and INSIGHT category metadata.
+
+### Changed
+- **WebUI Asset Resolution Priority** (`ui_server.py`): Local workspace `dashboard/dist` (Vite dev build) is now checked first before packaged assets, improving development iteration speed.
+- **Context Rendering Delegation** (`ctx_mock.py`): `MockFSMContext.generateNAGATO_BOOTContext()` now delegates to canonical `ContextRenderer` (`_render_yaml`, `_render_legacy`, `_render_json`) instead of duplicating logic, ensuring format parity with FSM mode.
+- **Context Limits Defaults** (`config.py`): Added new defaults for `trail_max_depth`, `subgoal_context_max_depth`, `subgoal_context_children_limit`, `trail_line_max_chars`, `handoff_context_max_items`, `handoff_context_max_chars`, `handoff_context_token_budget`, and `debug` flag.
+- **Token Limit Helper** (`config.py`): New `limit_or_none()` helper converts `0` or `None` to `None` (unlimited), preserving positive ints.
+
+### Fixed
+- **WebUI Asset Hash Update** (`webui_dist/index.html`): Updated script reference from `index-7IoJ1upB.js` to `index-DzCaGswg.js` (new Vite build output).
+
+## [0.2.2] - 2026-09-30
+
+### Added
+- **Session & Workspace Isolation for Undo System** (`ctx_mock.py`, `undo.py`, `config.py`, docs): Isolated undo/redo caches per `(workspace, session_id)` pair enabling safe concurrent usage by multiple agents. Auto-generates session ID from workspace path hash (`ws_a1b2c3d4`) when no explicit ID provided. Supports `proj:<name>` format for project-scoped sessions. New directory structure: `.nagato/sessions/<session_id>/undo_cache` and `.nagato/sessions/<session_id>/redo_cache`.
+- **Semantic Search Whitelist Mode** (`config.py`, `search.py`, `semanticindex.py`): New `search_dirs` config option to restrict indexing/searching to specific subdirectories (whitelist). `ignored_dirs` still applies to hidden directories. Works across `nagato_searchInFiles`, `nagato_semantic_search`, `nagato_rebuild_symbol_db`, `nagato_set_semantic_search_root`, and `ensure_index_current()`.
+- **Docstring-Only Embedding Mode** (`config.py`, `semanticindex.py`, `search.py`, `edit.py`): New `docstring_only` config option to embed only docstrings instead of full function/class bodies. Reduces index size and improves relevance for documentation-focused searches.
+- **AST-Aware Chunk Splitting** (`semanticindex.py`): Large functions/classes are now split using AST-aware logic (by statements, decorators, class methods) respecting model token limits. Adds `EmbeddingModels.get_max_chunk_chars()` for model-aware chunk sizing (BAAI: ~2048 chars, Jina: ~8192 chars).
+- **Thread Pools for Embedding & Auto-Indexing** (`semanticindex.py`, `search.py`): Global thread pools (`_get_embedding_executor`, `_get_auto_index_executor`) offload CPU-intensive embedding work and auto-indexing from the event loop. Query embedding and `ensure_index_current()` now run asynchronously.
+- **Session-Aware Config Loading** (`config.py`): All config loading functions (`load_functions_config`, `get_semantic_search_config`, `get_lint_config`, `get_ignored_dirs`, `get_config_path`, `resolve_semantic_search_root`) now accept optional `ctx` parameter for workspace root resolution.
+
+### Changed
+- **Semantic Index Memory & Performance** (`semanticindex.py`): Streaming embeddings with `batch_size=32`, `parallel=1` to prevent OOM; AST-aware chunking replaces hard 8000-char truncation; whitelist mode for targeted indexing; thread pool offloading for query embedding and auto-indexing.
+- **Search Tools** (`search.py`): `_iter_searchable_text_files` supports whitelist mode; `nagato_semantic_search` auto-indexing runs in thread pool; `nagato_rebuild_symbol_db` and `nagato_set_semantic_search_root` use config-aware indexer with `docstring_only`.
+- **Edit Tools** (`edit.py`): Symbol updates use config-aware `_get_semantic_indexer()` helper respecting `docstring_only` setting.
+- **Undo System** (`undo.py`, `ctx_mock.py`): Uses `ctx.workspace_root` for correct directory resolution; `MockFSMContext` creates session-scoped undo/redo directories.
+- **Documentation** (`.github/copilot-instructions.md`, `AGENT_INSTRUCTIONS.md`, `README.md`, `src/nagato_tools/docs/AGENT_INSTRUCTIONS.md`, `src/nagato_tools/docs/STANDALONE_UNDO.md`): Added session/workspace isolation docs, concurrency model tables, MCP client config examples, zero-config isolation explanation, and updated directory structure diagrams.
+- **WebUI Assets** (`src/nagato_tools/webui_dist/`): Updated to new hashed asset filenames (`index-7IoJ1upB.js`, `index-laAmOdvw.css`).
+
+### Fixed
+- **Session ID Resolution** (`ctx_mock.py`): Auto-generation from workspace hash when no explicit session ID provided; sanitization replaces `:` with `_` for filesystem safety.
+- **Config Path Resolution** (`config.py`): `_get_workspace_root(ctx)` helper ensures correct workspace detection from context.
+
 ## [0.2.1] - Unreleased
 
 ### Added

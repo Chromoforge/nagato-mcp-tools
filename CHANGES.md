@@ -2,6 +2,23 @@
 
 Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## [0.2.3] - 2026-10-07
+
+### Added
+- **Redundant Read Detection** (`config.py`, `ctx_mock.py`, `read.py`): New `redundant_read_detection.enabled` config option (default: `true`). When enabled, `nagato_read_file` and `nagato_read_lines` track file reads and prepend a warning if the same unchanged file is read again without intervening edits or disk changes. Agent edits via `nagato_edit`/`nagato_edit_lines` reset the warning; external file modifications (mtime/hash change) also reset it.
+- **Hierarchical Compound Nodes in WebUI** (`webui_dist/`): Insight Graph now renders AST containment hierarchies as collapsible containers (Domains → Concepts → Components → Files). Double-click to expand/collapse; clickable breadcrumb trail for instant navigation.
+- **Session Listing API** (`telemetry.py`, `ui_server.py`): New `list_standalone_sessions()` function and `/api/v1/standalone/sessions` REST endpoint to enumerate all available standalone sessions with undo/redo/audit status.
+- **Concept Batch Tool** (`facade.py`, `tool_categories.py`): Added `nagato_concept_batch` to the list of action-journal-tracked tools and INSIGHT category metadata.
+
+### Changed
+- **WebUI Asset Resolution Priority** (`ui_server.py`): Local workspace `dashboard/dist` (Vite dev build) is now checked first before packaged assets, improving development iteration speed.
+- **Context Rendering Delegation** (`ctx_mock.py`): `MockFSMContext.generateNAGATO_BOOTContext()` now delegates to canonical `ContextRenderer` (`_render_yaml`, `_render_legacy`, `_render_json`) instead of duplicating logic, ensuring format parity with FSM mode.
+- **Context Limits Defaults** (`config.py`): Added new defaults for `trail_max_depth`, `subgoal_context_max_depth`, `subgoal_context_children_limit`, `trail_line_max_chars`, `handoff_context_max_items`, `handoff_context_max_chars`, `handoff_context_token_budget`, and `debug` flag.
+- **Token Limit Helper** (`config.py`): New `limit_or_none()` helper converts `0` or `None` to `None` (unlimited), preserving positive ints.
+
+### Fixed
+- **WebUI Asset Hash Update** (`webui_dist/index.html`): Updated script reference from `index-7IoJ1upB.js` to `index-DzCaGswg.js` (new Vite build output).
+
 ## [0.2.2] - 2026-09-30
 
 ### Added
