@@ -286,6 +286,7 @@ nagato-ui --workspace /path/to/target-project --port 8080 --open-browser
 - 🪙 **Token Usage Tracking**: Aggregated prompt/completion tokens and interaction breakdown.
 - 🔍 **Overview & Health**: Consolidated workspace telemetry metrics and health checks.
 - 🔌 **Standalone REST API**: HTTP endpoints (`/api/v1/standalone/*`) for external scripts or custom frontends.
+- 🧱 **Hierarchical Compound Nodes**: Insight Graph renders AST containment hierarchies as collapsible containers (Domains → Concepts → Components → Files). Double-click to expand/collapse; clickable breadcrumb trail for instant navigation.
 
 ### Building the WebUI from Source
 ```bash
@@ -395,6 +396,22 @@ To prevent huge files or unbounded searches from overwhelming LLM context window
 - **Disable Truncation Completely**: Set a category or `"default"` to `0`, `null`, or `"unlimited"` (e.g. `"tool_token_limits": {"default": 0}`).
 - **Truncation Notice**: When truncated, outputs append `[TRUNCATED: X tokens omitted]`.
 
+### 🔁 Redundant Read Detection (`redundant_read_detection`)
+
+To prevent token waste from repeatedly reading the same unchanged file, `nagato_read_file` and `nagato_read_lines` can detect and warn on redundant reads.
+
+- **Default**: Enabled (`"enabled": true`)
+- **Behavior**: When a file is read twice without changes on disk, a warning is prepended: `WARN: File 'X' has already been read and has not changed on disk. Avoid redundant reads; inspect your prior turn context or proceed with next action.`
+- **Agent Edits Reset**: If the agent modifies the file via `nagato_edit`/`nagato_edit_lines`, the next read won't warn (tracked via `files_modified_this_step`).
+- **Disk Changes Reset**: If the file is modified externally (mtime/content hash changes), the next read won't warn.
+- **Disable**: Set `"enabled": false` in config.
+
+```json
+"redundant_read_detection": {
+  "enabled": true
+}
+```
+
 > **Important — Workspace Configuration Location**:
 > The `.nagato/functions_config.json` file is loaded **relative to the target `--workspace` directory**, NOT from the directory where the MCP server / tool package is installed!
 >
@@ -444,6 +461,9 @@ Here's a full `.nagato/functions_config.json` showing all available options:
     "read": 50000,
     "search": "unlimited",
     "shell": 0
+  },
+  "redundant_read_detection": {
+    "enabled": true
   }
 }
 ```
@@ -454,6 +474,7 @@ Here's a full `.nagato/functions_config.json` showing all available options:
 - **`semantic_search`** — Vector search configuration
 - **`lint`** — Ruff linting behavior
 - **`tool_token_limits`** — Output truncation per category (0 = unlimited)
+- **`redundant_read_detection`** — Warns when reading the same unchanged file multiple times (`enabled`: toggle feature, `warn_only`: only prepend warning, never block)
 
 All paths are relative to the `--workspace` directory.
 ---
