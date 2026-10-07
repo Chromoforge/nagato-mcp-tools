@@ -226,6 +226,43 @@ def get_force_insight_config() -> dict:
     }
 
 
+def get_redundant_read_config(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> dict:
+    """
+    Get the redundant read detection configuration.
+    
+    Checks .nagato/functions_config.json first (standalone / project override), 
+    then falls back to fsm.config.
+    
+    Returns dict with keys:
+    - enabled: Whether to detect and warn on redundant file reads (default: True)
+    """
+    # Check if there's a dedicated redundant_read_detection key in the config
+    config_path = config_path or get_config_path(ctx)
+    if config_path.exists():
+        import json
+        with config_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "redundant_read_detection" in data and isinstance(data["redundant_read_detection"], dict):
+            defaults = {
+                "enabled": True,
+            }
+            res = dict(defaults)
+            res.update(data["redundant_read_detection"])
+            return res
+    
+    # Fall back to fsm.config
+    import importlib
+    try:
+        fsm_config = None  # fsm.config is host-only; standalone uses defaults
+        return fsm_config.get_redundant_read_config()
+    except (ImportError, AttributeError):
+        pass
+    
+    return {
+        "enabled": True,
+    }
+
+
 def is_force_insight_enabled() -> bool:
     """Check if force insight gating is enabled."""
     config = get_force_insight_config()
@@ -369,29 +406,48 @@ def get_token_limits() -> tuple[int, int, float]:
     return max_context_size, max_context_tokens, history_token_ratio
 
 
+def limit_or_none(value: Any) -> Optional[int]:
+    """Helper converting 0 or None to None (meaning unlimited), and preserving positive ints."""
+    if value is None:
+        return None
+    try:
+        val_int = int(value)
+        return None if val_int <= 0 else val_int
+    except (ValueError, TypeError):
+        return None
+
+
 def get_context_limits() -> dict:
     """
     Get context pruning limits from config with sensible defaults.
     
     Standalone version: returns sensible defaults without YAML config.
-    
-    Returns:
-        dict with keys: recent_history_limit, recent_entry_max_chars, context_tier,
-        pending_questions_limit, answered_questions_limit, subgoals_limit, findings_limit,
-        calls_limit, last_errors_limit, call_result_max_chars
+    Delegates to canonical fsm.config.get_context_limits if available.
     """
-    return {
-        "recent_history_limit": 5,
-        "recent_entry_max_chars": 4000,
-        "call_result_max_chars": 100,
-        "context_tier": 1,
-        "pending_questions_limit": 5,
-        "answered_questions_limit": 3,
-        "subgoals_limit": 3,
-        "findings_limit": 5,
-        "calls_limit": 3,
-        "last_errors_limit": 3,
-    }
+    try:
+        from nagato_tools.config import get_context_limits as _canon_limits
+        return _canon_limits()
+    except Exception:
+        return {
+            "debug": False,
+            "recent_history_limit": 5,
+            "recent_entry_max_chars": 4000,
+            "call_result_max_chars": 100,
+            "context_tier": 1,
+            "pending_questions_limit": 5,
+            "answered_questions_limit": 3,
+            "subgoals_limit": 3,
+            "findings_limit": 5,
+            "calls_limit": 3,
+            "last_errors_limit": 3,
+            "trail_max_depth": 5,
+            "subgoal_context_max_depth": 5,
+            "subgoal_context_children_limit": 10,
+            "trail_line_max_chars": 120,
+            "handoff_context_max_items": 20,
+            "handoff_context_max_chars": 500,
+            "handoff_context_token_budget": 2000,
+        }
 
 
 def get_context_format() -> str:

@@ -230,6 +230,9 @@ class MockFSMContext:
         self._request_stack: List[str] = []
         self._action_stack: List[str] = []
         self._state_stack: List[str] = ["STANDALONE"]
+        
+        # Session read tracking for redundant read detection
+        self._read_files: dict[str, tuple[str, float]] = {}  # file_path -> (content_hash, mtime)
 
         # Standalone undo and redo cache directories (scoped to session_id)
         if self.session_id == "standalone":
@@ -336,6 +339,62 @@ class MockFSMContext:
     def register_file(self, file: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Register a file for tracking (no-op in standalone)."""
         pass
+    
+    def track_file_read(self, file_path: str, content: str) -> Optional[str]:
+        """Track a file read and detect redundant reads.
+        
+        Returns a warning message if the file was already read and hasn't changed,
+        otherwise returns None.
+        """
+        # Check if redundant read detection is enabled
+        from fsm.functions_internal.config import get_redundant_read_config
+        redundant_read_cfg = get_redundant_read_config(ctx=self)
+        if not redundant_read_cfg.get("enabled", True):
+            return None
+        
+        import hashlib
+        import os
+        from pathlib import Path
+        
+        workspace_root = self.workspace_root
+        full_path = workspace_root / file_path
+        
+        # Normalize file path for consistent tracking
+        try:
+            normalized_path = str(full_path.resolve().relative_to(workspace_root.resolve())).replace('\\', '/')
+        except ValueError:
+            # Path is outside workspace, use as-is
+            normalized_path = file_path.replace('\\', '/')
+        
+        try:
+            # Get current file mtime and content hash
+            stat = full_path.stat()
+            current_mtime = stat.st_mtime
+            content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+            
+            # Check if we've read this file before
+            if normalized_path in self._read_files:
+                prev_hash, prev_mtime = self._read_files[normalized_path]
+                
+                # Check if file has been modified on disk
+                if current_mtime == prev_mtime and content_hash == prev_hash:
+                    # File hasn't changed - redundant read
+                    return (f"WARN: File '{normalized_path}' has already been read and has not changed on disk. "
+                            f"Avoid redundant reads; inspect your prior turn context or proceed with next action.")
+                
+                # Check if the agent has modified this file in the current session
+                if (normalized_path, "workspace") in self.files_modified_this_step:
+                    # Agent modified it, so reading again is OK
+                    pass
+            
+            # Update tracking
+            self._read_files[normalized_path] = (content_hash, current_mtime)
+            return None
+        except Exception:
+            # If we can't stat the file, just track it without redundant check
+            content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+            self._read_files[normalized_path] = (content_hash, 0)
+            return None
     
     def track_edit_for_undo(self, file_path: str, old_content: Optional[str] = None, new_content: Optional[str] = None, is_new: bool = False, is_delete: bool = False) -> None:
         """
@@ -504,20 +563,17 @@ class MockFSMContext:
     # --- Context rendering (minimal) ---
     
     def generateNAGATO_BOOTContext(self, gold_state: str = "unknown", reds: int = -1, anchor: str = "", run_id: str = "", hard_handoff_tokens: Optional[int] = None) -> str:
-        """Generate context block matching the new YAML format."""
-        context_format = get_context_format()
-        
-        # Build a minimal snapshot for standalone mode
+        """Generate context block matching canonical renderer format."""
+        from fsm.context.renderer import ContextRenderer
         snapshot = {
             "session_id": self.session_id,
             "turn": self.Turn,
             "state": self.GetState(),
-            "target": self.Target or "",
-            # workflow_guide intentionally omitted (see note in fsm/context/renderer.py::get_handover_snapshot)
             "main_objective": self.MainObjective or "",
             "main_goal": self.MainGoal or "",
             "active_subgoal_id": None,
             "subgoals": [],
+            "stack": [],
             "last_action": self.LastAction or "",
             "last_action_result": self.LastActionResult or "",
             "last_errors": [],
@@ -530,195 +586,32 @@ class MockFSMContext:
             "anchor": anchor or "",
             "run_id": run_id or "",
             "pending_files": [],
+            "recent_actions": getattr(self, "recent_actions", []),
+            "recent_errors": getattr(self, "recent_errors", []),
+            "recent_calls": getattr(self, "recent_calls", []),
         }
-        
-        if context_format == "legacy":
-            return self._generate_legacy_context(snapshot, hard_handoff_tokens)
-        elif context_format == "json":
-            return self._generate_json_context(snapshot, hard_handoff_tokens)
-        else:  # yaml (default)
-            return self._generate_yaml_context(snapshot, hard_handoff_tokens)
+        fmt = get_context_format()
+        if fmt == "legacy":
+            return ContextRenderer._render_legacy(self, snapshot, hard_handoff_tokens)
+        elif fmt == "json":
+            return ContextRenderer._render_json(self, snapshot, hard_handoff_tokens)
+        else:
+            return ContextRenderer._render_yaml(self, snapshot, hard_handoff_tokens)
     
     def _generate_yaml_context(self, snapshot: dict, hard_handoff_tokens: Optional[int] = None) -> str:
-        """Generate YAML-formatted [NAGATO_BOOT] context for standalone mode."""
-        limits = get_context_limits()
-        
-        # Build structured dict for YAML output
-        structured = {
-            "session_id": snapshot["session_id"],
-            "turn": snapshot["turn"],
-            "state": snapshot["state"],
-            "target": snapshot["target"],
-        }
-        # workflow_guide intentionally omitted (see note in fsm/context/renderer.py::get_handover_snapshot)
-        structured.update({
-            "main_objective": snapshot["main_objective"],
-            "main_goal": snapshot["main_goal"],
-            "active_subgoal_id": snapshot["active_subgoal_id"],
-            "subgoals": snapshot["subgoals"],
-            "last_action": snapshot["last_action"],
-            "last_action_result": snapshot["last_action_result"],
-            "last_errors": snapshot["last_errors"],
-            "pending_questions": snapshot["pending_questions"],
-            "answered_questions": snapshot["answered_questions"],
-            "tools_available": snapshot["tools_available"],
-            "off_grid_mode": snapshot["off_grid_mode"],
-            "gold_state": snapshot["gold_state"],
-            "reds": snapshot["reds"],
-            "anchor": snapshot["anchor"],
-            "run_id": snapshot["run_id"],
-            "pending_files": snapshot["pending_files"],
-        })
-        
-        # SAFE YAML DUMP
-        yaml_str = yaml.safe_dump(structured, sort_keys=False, allow_unicode=True)
-        
-        # SANITIZE - escape block delimiters in all string values
-        def sanitize(obj):
-            if isinstance(obj, str):
-                return obj.replace("[/NAGATO_BOOT]", "\\[/NAGATO_BOOT]").replace("[NAGATO_BOOT]", "\\[NAGATO_BOOT]")
-            elif isinstance(obj, dict):
-                return {k: sanitize(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [sanitize(v) for v in obj]
-            return obj
-        
-        sanitized = sanitize(structured)
-        yaml_str = yaml.safe_dump(sanitized, sort_keys=False, allow_unicode=True)
-        
-        lines = ["[NAGATO_BOOT]"]
-        
-        if self.bStepTrace:
-            lines.append("🔴 STEPTRACE MODE - ALL TOOL CALLS BLOCKED")
-            lines.append("⚠️  Tool execution is paused for interactive debugging.")
-            lines.append("👤 HUMAN: Approve the next tool execution to proceed.")
-            lines.append("---")
-        
-        lines.append(yaml_str.rstrip())
-        
-        # Token count
-        soft_tokens = estimate("\n".join(lines))
-        # Always include token budget line for CLI display; config controls LLM visibility
-        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens} (ctx:{soft_tokens} sys:0 handoff:0 last_result:0 tool_docs:0)")
-        if soft_tokens > self.MaxContextTokens:
-            lines.append(
-                f"⚠️ TOKEN_BUDGET_WARNING: NAGATO_BOOT Context is {soft_tokens} tokens "
-                f"(limit {self.MaxContextTokens}). Consider wrapping up or requesting a chat rotation."
-            )
-        
-        if hard_handoff_tokens is not None:
-            lines.append(f"hard_handoff_tokens={hard_handoff_tokens} (est. cost if chat rotated now)")
-        
-        lines.append("[/NAGATO_BOOT]")
-        result = "\n".join(lines)
-        
-        self.ContextBlock = result
-        self.last_context_tokens = soft_tokens
-        self.last_hard_handoff_tokens = hard_handoff_tokens
-        return result
+        """Delegate to ContextRenderer._render_yaml."""
+        from fsm.context.renderer import ContextRenderer
+        return ContextRenderer._render_yaml(self, snapshot, hard_handoff_tokens)
     
     def _generate_legacy_context(self, snapshot: dict, hard_handoff_tokens: Optional[int] = None) -> str:
-        """Generate legacy flat key=value format for backward compatibility."""
-        lines = ["[NAGATO_BOOT]"]
-        
-        if self.bStepTrace:
-            lines.append("🔴 STEPTRACE MODE - ALL TOOL CALLS BLOCKED")
-            lines.append("---")
-        
-        lines.append(f"sid={snapshot['session_id']}")
-        lines.append(f"state={snapshot['state']}")
-        
-        if snapshot["target"]:
-            lines.append(f"target={snapshot['target']}")
-        if snapshot["main_objective"]:
-            lines.append(f"main_objective={snapshot['main_objective']}")
-        if snapshot["main_goal"]:
-            lines.append(f"main_goal={snapshot['main_goal']}")
-        if snapshot["last_action"]:
-            lines.append(f"last_call={snapshot['last_action']}")
-        if snapshot["last_action_result"]:
-            lines.append(f"last_result={snapshot['last_action_result']}")
-        
-        soft_tokens = estimate("\n".join(lines))
-        # Always include token budget line for CLI display; config controls LLM visibility
-        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
-        if soft_tokens > self.MaxContextTokens:
-            lines.append(f"⚠️ TOKEN_BUDGET_WARNING: {soft_tokens} tokens (limit {self.MaxContextTokens})")
-        
-        if hard_handoff_tokens is not None:
-            lines.append(f"hard_handoff_tokens={hard_handoff_tokens}")
-        
-        lines.append("[/NAGATO_BOOT]")
-        result = "\n".join(lines)
-        
-        self.ContextBlock = result
-        self.last_context_tokens = soft_tokens
-        self.last_hard_handoff_tokens = hard_handoff_tokens
-        return result
+        """Delegate to ContextRenderer._render_legacy."""
+        from fsm.context.renderer import ContextRenderer
+        return ContextRenderer._render_legacy(self, snapshot, hard_handoff_tokens)
     
     def _generate_json_context(self, snapshot: dict, hard_handoff_tokens: Optional[int] = None) -> str:
-        """Generate compact JSON format for token efficiency."""
-        import json
-        
-        structured = {
-            "sid": snapshot["session_id"],
-            "turn": snapshot["turn"],
-            "state": snapshot["state"],
-            "target": snapshot["target"],
-            "main_obj": snapshot["main_objective"],
-            "main_goal": snapshot["main_goal"],
-            "active_sg": snapshot["active_subgoal_id"],
-            "sgs": snapshot["subgoals"],
-            "last_act": snapshot["last_action"],
-            "last_res": snapshot["last_action_result"],
-            "errs": snapshot["last_errors"],
-            "pq": snapshot["pending_questions"],
-            "aq": snapshot["answered_questions"],
-            "tools": snapshot["tools_available"],
-            "off_grid": snapshot["off_grid_mode"],
-            "gold": snapshot["gold_state"],
-            "reds": snapshot["reds"],
-            "anchor": snapshot["anchor"],
-            "run": snapshot["run_id"],
-            "mod": snapshot["pending_files"],
-        }
-        
-        def sanitize(obj):
-            if isinstance(obj, str):
-                return obj.replace("[/NAGATO_BOOT]", "\\[/NAGATO_BOOT]").replace("[NAGATO_BOOT]", "\\[NAGATO_BOOT]")
-            elif isinstance(obj, dict):
-                return {k: sanitize(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [sanitize(v) for v in obj]
-            return obj
-        
-        sanitized = sanitize(structured)
-        json_str = json.dumps(sanitized, separators=(',', ':'), ensure_ascii=False)
-        
-        lines = ["[NAGATO_BOOT]"]
-        
-        if self.bStepTrace:
-            lines.append("🔴 STEPTRACE MODE - ALL TOOL CALLS BLOCKED")
-            lines.append("---")
-        
-        lines.append(json_str)
-        
-        soft_tokens = estimate("\n".join(lines))
-        # Always include token budget line for CLI display; config controls LLM visibility
-        lines.append(f"tokens={soft_tokens}/{self.MaxContextTokens}")
-        if soft_tokens > self.MaxContextTokens:
-            lines.append(f"⚠️ TOKEN_BUDGET_WARNING: {soft_tokens} tokens (limit {self.MaxContextTokens})")
-        
-        if hard_handoff_tokens is not None:
-            lines.append(f"hard_handoff_tokens={hard_handoff_tokens}")
-        
-        lines.append("[/NAGATO_BOOT]")
-        result = "\n".join(lines)
-        
-        self.ContextBlock = result
-        self.last_context_tokens = soft_tokens
-        self.last_hard_handoff_tokens = hard_handoff_tokens
-        return result
+        """Delegate to ContextRenderer._render_json."""
+        from fsm.context.renderer import ContextRenderer
+        return ContextRenderer._render_json(self, snapshot, hard_handoff_tokens)
     
     # --- Compatibility properties ---
     

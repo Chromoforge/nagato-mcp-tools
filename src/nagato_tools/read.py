@@ -220,6 +220,11 @@ async def nagato_read_file(file: str, _ctx: Optional[Any] = None) -> str:
         with target_file.open("r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         
+        # Track file read and detect redundant reads
+        redundant_warning = None
+        if hasattr(ctx, 'track_file_read'):
+            redundant_warning = ctx.track_file_read(file, content)
+        
         # Trigger Insight sync if file is missing or stale
         sync_queued = False  # Insight disabled
         sync_notice = "[INSIGHT: knowledge graph entry for this file is being (re)created in background]\n\n" if sync_queued else ""
@@ -229,7 +234,12 @@ async def nagato_read_file(file: str, _ctx: Optional[Any] = None) -> str:
         alert_prefix = f"{radar_alert}\n\n" if radar_alert else ""
 
         notice = _check_irrelevance_guard(file, ctx=ctx, workspace_root=workspace_root, tool_name="nagato_read_file")
-        return alert_prefix + sync_notice + notice + _truncate_to_token_limit(content, ctx=ctx)
+        result = alert_prefix + sync_notice + notice + _truncate_to_token_limit(content, ctx=ctx)
+        
+        if redundant_warning:
+            result = redundant_warning + "\n\n" + result
+        
+        return result
     except Exception as e:
         return nagato_error(str(e), tool="nagato_read_file")
 
@@ -266,6 +276,12 @@ async def nagato_read_lines(file: str, start_line: int, end_line: int, _ctx: Opt
             )
 
         selected_lines = lines[start_line - 1:end_line]
+        content = "".join(selected_lines)
+        
+        # Track file read and detect redundant reads
+        redundant_warning = None
+        if hasattr(ctx, 'track_file_read'):
+            redundant_warning = ctx.track_file_read(file, content)
         
         # Trigger Insight sync if file is missing or stale
         sync_queued = False  # Insight disabled
@@ -276,7 +292,12 @@ async def nagato_read_lines(file: str, start_line: int, end_line: int, _ctx: Opt
         alert_prefix = f"{radar_alert}\n\n" if radar_alert else ""
 
         notice = _check_irrelevance_guard(file, ctx=ctx, workspace_root=workspace_root, tool_name="nagato_read_lines")
-        return alert_prefix + sync_notice + notice + _truncate_to_token_limit("".join(selected_lines), ctx=ctx)
+        result = alert_prefix + sync_notice + notice + _truncate_to_token_limit(content, ctx=ctx)
+        
+        if redundant_warning:
+            result = redundant_warning + "\n\n" + result
+        
+        return result
     except Exception as e:
         return nagato_error(str(e), tool="nagato_read_lines")
 
