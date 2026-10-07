@@ -173,7 +173,7 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
         description="Epistemic World Model / Knowledge Graph tools (concepts, links, radar, search).",
         group=CategoryGroup.INSIGHT,
         example_tools=[
-            "nagato_concept_create", "nagato_concept_link", "nagato_concept_collapse",
+            "nagato_concept_create", "nagato_concept_batch", "nagato_concept_link", "nagato_concept_collapse",
             "nagato_concept_expand", "nagato_view_radar", "nagato_search_concept",
             "nagato_insights_search", "nagato_sync_ast_to_insight", "nagato_unified_search",
             "nagato_drift_report", "nagato_impact_analysis", "nagato_block_save",
