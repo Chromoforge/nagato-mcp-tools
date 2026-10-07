@@ -126,9 +126,59 @@ class SessionAuditSummary(BaseModel):
 def get_audit_file(session_id: str = "standalone", workspace_root: Optional[Path] = None) -> Path:
     """Return the path to the audit.jsonl log for standalone mode."""
     root = Path(workspace_root).resolve() if workspace_root is not None else get_workspace_root()
-    audit_dir = root / ".nagato" / "standalone"
+    if session_id == "standalone":
+        audit_dir = root / ".nagato" / "standalone"
+    else:
+        audit_dir = root / ".nagato" / "sessions" / session_id
     audit_dir.mkdir(parents=True, exist_ok=True)
     return audit_dir / "audit.jsonl"
+
+
+def list_standalone_sessions(workspace_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """List all available standalone sessions by scanning the sessions directory.
+    
+    Returns a list of session info dicts with session_id, has_undo, has_redo, has_audit.
+    """
+    root = Path(workspace_root).resolve() if workspace_root is not None else get_workspace_root()
+    sessions_dir = root / ".nagato" / "sessions"
+    
+    sessions = []
+    if sessions_dir.exists():
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            session_id = session_dir.name
+            undo_dir = session_dir / "undo_cache"
+            redo_dir = session_dir / "redo_cache"
+            audit_file = get_audit_file(session_id, workspace_root=root)
+            
+            sessions.append({
+                "session_id": session_id,
+                "has_undo": undo_dir.exists() and any(undo_dir.glob("snapshot_*.json")),
+                "has_redo": redo_dir.exists() and any(redo_dir.glob("snapshot_*.json")),
+                "has_audit": audit_file.exists(),
+            })
+    
+    # Always include the default "standalone" session as the first entry
+    default_audit = get_audit_file("standalone", workspace_root=root)
+    default_undo = root / ".nagato" / "undo_cache"
+    default_redo = root / ".nagato" / "redo_cache"
+    
+    standalone_session = {
+        "session_id": "standalone",
+        "has_undo": default_undo.exists() and any(default_undo.glob("snapshot_*.json")),
+        "has_redo": default_redo.exists() and any(default_redo.glob("snapshot_*.json")),
+        "has_audit": default_audit.exists(),
+    }
+    
+    # Check if "standalone" is already in the list (from sessions_dir)
+    if any(s["session_id"] == "standalone" for s in sessions):
+        # Replace the existing entry with our computed one
+        sessions = [standalone_session if s["session_id"] == "standalone" else s for s in sessions]
+    else:
+        sessions.insert(0, standalone_session)
+    
+    return sessions
 
 
 def publish_event(event: AuditEvent, workspace_root: Optional[Path] = None) -> None:
@@ -243,6 +293,7 @@ __all__ = [
     "set_workspace_root",
     "get_workspace_root",
     "get_audit_file",
+    "list_standalone_sessions",
     "publish_event",
     "read_audit_events",
     "add_listener",

@@ -47,6 +47,7 @@ from nagato_tools.telemetry import (
     UndoStatus,
     add_listener,
     get_audit_file,
+    list_standalone_sessions,
     publish_event,
     read_audit_events,
     remove_listener,
@@ -75,12 +76,17 @@ def resolve_webui_dist_dir() -> Optional[Path]:
     Locate the built WebUI static assets directory.
     
     Checks in priority order:
-    1. Package data via nagato_tools.webui_dist
-    2. Package data via fsm.webui_dist
-    3. Relative directory from package src
-    4. Local dashboard/dist development build directory
+    1. Local workspace dashboard/dist (development build - direct from Vite output)
+    2. Package data via nagato_tools.webui_dist
+    3. Package data via fsm.webui_dist
+    4. Relative directory from package src
     """
-    # 1. Try nagato_tools.webui_dist package resource
+    # 1. Local workspace dashboard/dist - PRIMARY for development
+    repo_candidate = Path.cwd() / "dashboard" / "dist"
+    if repo_candidate.is_dir() and (repo_candidate / "index.html").exists():
+        return repo_candidate
+
+    # 2. Try nagato_tools.webui_dist package resource
     try:
         traversable = resources.files("nagato_tools.webui_dist")
         path = Path(str(traversable))
@@ -89,7 +95,7 @@ def resolve_webui_dist_dir() -> Optional[Path]:
     except (ImportError, TypeError, ValueError, AttributeError):
         pass
 
-    # 2. Try fsm.webui_dist package resource (if running inside repo)
+    # 3. Try fsm.webui_dist package resource (if running inside repo)
     try:
         traversable = resources.files("fsm.webui_dist")
         path = Path(str(traversable))
@@ -98,15 +104,10 @@ def resolve_webui_dist_dir() -> Optional[Path]:
     except (ImportError, TypeError, ValueError, AttributeError):
         pass
 
-    # 3. Relative to this module
+    # 4. Relative to this module
     candidate = Path(__file__).resolve().parent.parent / "nagato_tools" / "webui_dist"
     if candidate.is_dir() and (candidate / "index.html").exists():
         return candidate
-
-    # 4. Local workspace dashboard/dist
-    repo_candidate = Path.cwd() / "dashboard" / "dist"
-    if repo_candidate.is_dir() and (repo_candidate / "index.html").exists():
-        return repo_candidate
 
     return None
 
@@ -193,6 +194,15 @@ def create_app(workspace_root: Optional[Union[str, Path]] = None, session_id: Op
             "tools": facade.get_registered_functions(),
             "count": len(facade.get_registered_functions()),
             "session_id": sanitized_session_id,
+        }
+
+    @app.get("/api/v1/standalone/sessions", tags=["standalone"])
+    async def list_standalone_sessions_endpoint():
+        """List all available standalone sessions."""
+        sessions = await asyncio.to_thread(list_standalone_sessions, ws_root)
+        return {
+            "sessions": sessions,
+            "count": len(sessions),
         }
 
     @app.post("/api/v1/standalone/tools/{tool_name}", tags=["standalone"])
