@@ -287,7 +287,7 @@ class MockFSMContext:
     def _init_system_info(self):
         """Initialize system info (lazy)."""
         try:
-            from fsm.functions_internal.system import get_system_info
+            from nagato_tools.system import get_system_info
             self.SystemInfo = get_system_info()
         except Exception:
             self.SystemInfo = "System info unavailable (standalone mode)"
@@ -347,7 +347,7 @@ class MockFSMContext:
         otherwise returns None.
         """
         # Check if redundant read detection is enabled
-        from fsm.functions_internal.config import get_redundant_read_config
+        from nagato_tools.config import get_redundant_read_config
         redundant_read_cfg = get_redundant_read_config(ctx=self)
         if not redundant_read_cfg.get("enabled", True):
             return None
@@ -564,7 +564,10 @@ class MockFSMContext:
     
     def generateNAGATO_BOOTContext(self, gold_state: str = "unknown", reds: int = -1, anchor: str = "", run_id: str = "", hard_handoff_tokens: Optional[int] = None) -> str:
         """Generate context block matching canonical renderer format."""
-        from fsm.context.renderer import ContextRenderer
+        try:
+            from fsm.context.renderer import ContextRenderer
+        except ImportError:
+            ContextRenderer = None
         snapshot = {
             "session_id": self.session_id,
             "turn": self.Turn,
@@ -600,17 +603,26 @@ class MockFSMContext:
     
     def _generate_yaml_context(self, snapshot: dict, hard_handoff_tokens: Optional[int] = None) -> str:
         """Delegate to ContextRenderer._render_yaml."""
-        from fsm.context.renderer import ContextRenderer
+        try:
+            from fsm.context.renderer import ContextRenderer
+        except ImportError:
+            ContextRenderer = None
         return ContextRenderer._render_yaml(self, snapshot, hard_handoff_tokens)
     
     def _generate_legacy_context(self, snapshot: dict, hard_handoff_tokens: Optional[int] = None) -> str:
         """Delegate to ContextRenderer._render_legacy."""
-        from fsm.context.renderer import ContextRenderer
+        try:
+            from fsm.context.renderer import ContextRenderer
+        except ImportError:
+            ContextRenderer = None
         return ContextRenderer._render_legacy(self, snapshot, hard_handoff_tokens)
     
     def _generate_json_context(self, snapshot: dict, hard_handoff_tokens: Optional[int] = None) -> str:
         """Delegate to ContextRenderer._render_json."""
-        from fsm.context.renderer import ContextRenderer
+        try:
+            from fsm.context.renderer import ContextRenderer
+        except ImportError:
+            ContextRenderer = None
         return ContextRenderer._render_json(self, snapshot, hard_handoff_tokens)
     
     # --- Compatibility properties ---
