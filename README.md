@@ -448,7 +448,8 @@ Here's a full `.nagato/functions_config.json` showing all available options:
     "db_path": "nagato_codebase.db",
     "embedding_model": "jina",
     "dimension": 768,
-    "auto_index": true
+    "auto_index": true,
+    "docstring_only": false
   },
   "lint": {
     "enabled": true,

@@ -46,7 +46,8 @@ Create or edit `.nagato/functions_config.json` in your workspace root:
     "model_cache_dir": ".nagato/models",
     "dimension": 768,
     "auto_index": true,
-    "search_root": ""
+    "search_root": "",
+    "docstring_only": false
   }
 }
 ```
@@ -61,6 +62,7 @@ Create or edit `.nagato/functions_config.json` in your workspace root:
 | `dimension` | integer | `768` | Vector dimension (auto-set based on model, but can override) |
 | `auto_index` | boolean | `true` | Automatically keep index current on search/rebuild |
 | `search_root` | string | `""` | Optional override for semantic search base directory. Relative paths resolve from workspace root. Can point outside workspace (external directory). |
+| `docstring_only` | boolean | `false` | If `true`, embed only docstrings instead of full function/class bodies. Reduces index size and improves relevance for documentation-focused searches. |
 
 ### Model Comparison
 
