@@ -44,11 +44,17 @@ def _get_fsm_instance():
 
 
 def _get_context(ctx: Optional[Any] = None) -> Any:
-    """Get context from injected parameter or fall back to global session."""
+    """Get context from injected parameter or fall back to the mock context."""
     if ctx is not None:
         return ctx
-    fsm = _get_fsm_instance()
-    return fsm.Context
+    try:
+        fsm = _get_fsm_instance()
+        if fsm is not None:
+            return fsm.Context
+    except Exception:
+        pass
+    from nagato_tools.ctx_mock import get_mock_context
+    return get_mock_context(_get_workspace_root(ctx))
 
 
 def _get_completion_message(ctx: Any) -> str:

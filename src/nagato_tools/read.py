@@ -22,9 +22,12 @@ def _get_context(ctx: Optional[Any] = None) -> Any:
     if ctx is not None:
         return ctx
     # Try to get context from global session instance
-    fsm = edit_module._get_fsm_instance()
-    if fsm is not None:
-        return fsm.Context
+    try:
+        fsm = edit_module._get_fsm_instance()
+        if fsm is not None:
+            return fsm.Context
+    except Exception:
+        pass
     return get_mock_context()
 
 
