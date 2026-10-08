@@ -2,6 +2,19 @@
 
 Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## [0.2.4] - 2026-10-08
+
+### Changed
+- **Config Key Renames** (`config.py`): Renamed `subgoals_limit` → `subgoal_stack_limit`, `trail_max_depth` → `subgoal_context_max_depth`, `trail_line_max_chars` → `subgoal_context_line_max_chars` for clarity and consistency.
+- **Standalone Compatibility** (`ctx_mock.py`): Replaced `fsm.functions_internal` imports with `nagato_tools` equivalents; wrapped `ContextRenderer` imports in try/except for optional FSM dependency.
+
+### Fixed
+- **FSM Crash in Read/Edit Tools** (`read.py`, `edit.py`): Wrapped FSM instance lookup in try/except; gracefully falls back to mock context when no session is bound (standalone mode).
+
+### Maintenance
+- **WebUI Assets** (`webui_dist/`): Updated to new Vite build (`index-BgL3iPtX.js`, `index-MtSVh_jA.css`).
+- **Documentation** (`README.md`, `SEMANTIC_SEARCH_SETUP.md`): Added `docstring_only` config option to schema and examples.
+
 ## [0.2.3] - 2026-10-07
 
 ### Added
