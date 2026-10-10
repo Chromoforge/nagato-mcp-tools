@@ -598,6 +598,64 @@ async def nagato_set_semantic_search_root(path: str, _ctx: Optional[Any] = None)
     )
 
 
+async def nagato_sync_file_all(file_rel_path: str, _ctx: Optional[Any] = None) -> str:
+    """
+    Combined single-pass sync for a single file: updates both the semantic index 
+    (code_chunks, global_symbols, global_calls) and the Insight knowledge graph 
+    (AST nodes, edges) in one atomic operation.
+    
+    This eliminates duplicate AST parsing and embedding initialization.
+    
+    Args:
+        file_rel_path: Relative path to the file from workspace root
+        _ctx: Optional session context (injected by facade)
+        
+    Returns:
+        Summary string with combined results
+    """
+    ctx = _get_context(_ctx)
+    try:
+        config = _get_semantic_config()
+        indexer = SemanticIndexSearch(config={
+            "db_path": config.db_path,
+            "embedding_model": config.embedding_model,
+            "docstring_only": config.docstring_only,
+        })
+        result = indexer.sync_file_all(file_rel_path, ctx)
+        return result
+    except Exception as e:
+        return nagato_error(str(e), tool="nagato_sync_file_all")
+
+
+async def nagato_sync_directory_all(root_dir: str = ".", _ctx: Optional[Any] = None) -> str:
+    """
+    Combined single-pass sync for an entire directory tree: updates both the semantic index 
+    (code_chunks, global_symbols, global_calls) and the Insight knowledge graph (AST nodes, edges)
+    in one atomic operation per file.
+    
+    This eliminates duplicate AST parsing and embedding initialization across the entire project.
+    
+    Args:
+        root_dir: Path to the target directory (relative to workspace root)
+        _ctx: Optional session context (injected by facade)
+        
+    Returns:
+        Summary string with combined results
+    """
+    ctx = _get_context(_ctx)
+    try:
+        config = _get_semantic_config()
+        indexer = SemanticIndexSearch(config={
+            "db_path": config.db_path,
+            "embedding_model": config.embedding_model,
+            "docstring_only": config.docstring_only,
+        })
+        result = indexer.sync_directory_all(root_dir, ctx=ctx)
+        return result
+    except Exception as e:
+        return nagato_error(str(e), tool="nagato_sync_directory_all")
+
+
 # Non-prefixed aliases for MCP server compatibility
 searchInFile = nagato_searchInFile
 searchInFiles = nagato_searchInFiles
@@ -606,4 +664,6 @@ find_file = nagato_find_file
 searchAST = nagato_searchAST
 rebuild_symbol_db = nagato_rebuild_symbol_db
 set_semantic_search_root = nagato_set_semantic_search_root
-__all__ = ['nagato_searchInFile', 'nagato_searchInFiles', 'nagato_semantic_search', 'nagato_find_file', 'nagato_searchAST', 'nagato_rebuild_symbol_db', 'nagato_set_semantic_search_root']
+sync_file_all = nagato_sync_file_all
+sync_directory_all = nagato_sync_directory_all
+__all__ = ['nagato_searchInFile', 'nagato_searchInFiles', 'nagato_semantic_search', 'nagato_find_file', 'nagato_searchAST', 'nagato_rebuild_symbol_db', 'nagato_set_semantic_search_root', 'nagato_sync_file_all', 'nagato_sync_directory_all']

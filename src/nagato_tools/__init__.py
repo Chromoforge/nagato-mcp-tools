@@ -46,6 +46,8 @@ __all__ = [
     "nagato_searchAST",
     "nagato_rebuild_symbol_db",
     "nagato_set_semantic_search_root",
+    "nagato_sync_file_all",
+    "nagato_sync_directory_all",
     "nagato_read_file",
     "nagato_read_lines",
     "nagato_list_dir",
