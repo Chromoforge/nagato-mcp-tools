@@ -23,25 +23,31 @@ b) **Session-scoped via `NAGATO_SESSION_ID`**
    Undo/redo history and scratch dirs can be scoped per project via the `NAGATO_SESSION_ID`
    environment variable or `--session-id` flag (e.g. `proj:my-app`). Default if unset: `"standalone"`.
 
-c) **Two separate, unrelated persistence layers — don't conflate them:**
+c) **Three persistence layers with a unified sync pathway:**
 
    - A lightweight **AST symbol database** (plain SQLite, no embeddings, no LLM involved) behind
      `nagato_read_signatures` / `nagato_extract_callers` / `nagato_extract_callees`. Built and
      refreshed on demand with `nagato_rebuild_symbol_db`.
 
+   - A **Semantic Search index** (vector embeddings) for `nagato_semantic_search`. Auto-indexes on
+     every call via `ensure_index_current()`. Configured via `nagato_set_semantic_search_root`.
+
    - The optional **Insight knowledge graph** — a separate SQLite store for deliberately-curated
      architecture concepts (see the Insight section below).**
 
-   - A **Semantic Search index** (vector embeddings) for `nagato_semantic_search`. Auto-indexes on
-     every call via `ensure_index_current()`. Configured via `nagato_set_semantic_search_root`.**
+   **Each layer can be initialized independently, but the recommended workflow uses the combined sync tools:**
 
-   **These three systems are independent and must be initialized separately:**
-
-   | System | Purpose | Initialization Tool | Auto-Reindex? |
-   |--------|---------|---------------------|---------------|
+   | Layer | Purpose | Standalone Initialization | Auto-Reindex? |
+   |-------|---------|---------------------------|---------------|
    | **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
    | **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
    | **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
+
+   **Combined Single-Pass Sync** (eliminates duplicate AST parsing — updates both Semantic Index AND Insight Graph in one atomic operation):
+   | Tool | Scope | Use Case |
+   |------|-------|----------|
+   | `nagato_sync_file_all(file_rel_path="path/to/file.py")` | Single file | Incremental updates after editing a file |
+   | `nagato_sync_directory_all(root_dir=".")` | Entire project | Full project sync, CI/bootstrap |
 
    **The `docstring_only` config applies ONLY to Semantic Search embeddings, not Symbol DB or Insight Graph.**
 
@@ -67,15 +73,21 @@ Blindly reading entire files to search for functions, classes, or logic is a sev
 Violation of this strict routing will result in immediate context bloat. You are a specialized agent; act like one and use the specialized tools.
 
 
-### 0. System Initialization (Three Independent Systems)
+### 0. System Initialization (Unified Sync Pathway)
 
-**There is no single "init all" function.** The three data systems are independent and must be initialized separately:
+**Three persistence layers exist, but the recommended workflow uses combined single-pass sync tools that update both the Semantic Index and Insight Graph in one atomic operation:**
 
-| System | Purpose | Initialization Tool | Auto-Reindex? |
-|--------|---------|---------------------|---------------|
+| Layer | Purpose | Standalone Initialization | Auto-Reindex? |
+|-------|---------|---------------------------|---------------|
 | **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
 | **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
 | **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
+
+**Combined Single-Pass Sync** (eliminates duplicate AST parsing — updates both Semantic Index AND Insight Graph in one atomic operation):
+| Tool | Scope | Use Case |
+|------|-------|----------|
+| `nagato_sync_file_all(file_rel_path="path/to/file.py")` | Single file | Incremental updates after editing a file |
+| `nagato_sync_directory_all(root_dir=".")` | Entire project | Full project sync, CI/bootstrap |
 
 **The `docstring_only` config applies ONLY to Semantic Search embeddings, not Symbol DB or Insight Graph.**
 

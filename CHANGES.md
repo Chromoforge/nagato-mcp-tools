@@ -24,6 +24,23 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 ### Fixed
 - **Standalone Facade Category Resolution** (`fsm/function_facade.py`): All 42 registered standalone tools now cleanly resolve to their respective `ToolCategory` (no UNKNOWN entries) 
 
+### Documentation
+- **Three Independent Persistence Systems** (`.github/copilot-instructions.md`, `AGENT_INSTRUCTIONS.md`, `src/nagato_tools/docs/AGENT_INSTRUCTIONS.md`): Restructured system initialization docs to explicitly separate Symbol DB, Semantic Search, and Insight Graph with comparison tables showing purpose, initialization tool, and auto-reindex behavior. Added dedicated "System Initialization" section emphasizing no single "init all" function exists. Clarified `docstring_only` config applies only to Semantic Search embeddings.
+
+### Refactored
+- **Semantic Index Combined Sync & AST-Aware Chunking** (`src/nagato_tools/semanticindex.py`): Added `sync_file_all()` for combined single-pass sync updating both semantic index (code_chunks, global_symbols, global_calls) AND Insight knowledge graph (AST nodes, edges) in one atomic operation. Replaced EmbeddingModels with FastEmbed-based lazy loading. Implemented AST-aware chunk splitting via `_split_large_chunk_ast_aware()` with statement-boundary awareness. Added `docstring_only` mode support. Enhanced code_chunks table with symbol_name, node_id, chunk_type columns. Added graceful fallback for non-Python files using sliding-window chunking. Linked chunks to Insight node_ids for cross-system navigation.
+
+### Added
+- **Workspace Registry Integration** (`src/nagato_mcp_tools/server.py`, `src/nagato_mcp_tools/ui_server.py`, `src/nagato_tools/workspace_registry.py`): Register workspace on server startup. Added `/api/v1/standalone/workspaces` endpoint to list registered workspaces. Enhanced `/api/v1/standalone/sessions` with optional workspace query parameter and validation via `is_workspace_allowed()`. Returns workspace_root in sessions response. Graceful fallback when workspace_registry unavailable.
+
+### Maintenance
+- **WebUI Assets** (`src/nagato_tools/webui_dist/`): Updated to new Vite build (`index-CGTfLYGS.js`, `index-MtSVh_jA.css`).
+
+## [0.2.5] - 2026-10-10
+
+### Changed
+- **Version Bump** (`pyproject.toml`): 0.2.4 → 0.2.5
+
 ## [0.2.4] - 2026-10-08
 
 ### Changed

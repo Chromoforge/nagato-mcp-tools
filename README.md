@@ -264,18 +264,21 @@ The instructions guide the LLM to:
 
 ---
 
-### System Initialization (Three Independent Systems + Combined Sync)
+### System Initialization (Unified Sync Pathway)
 
-**There is no single "init all" function.** The three data systems are independent and must be initialized separately:
+**Three persistence layers exist, but the recommended workflow uses combined single-pass sync tools that update both the Semantic Index and Insight Graph in one atomic operation:**
 
-| System | Purpose | Initialization Tool | Auto-Reindex? |
-|--------|---------|---------------------|---------------|
+| Layer | Purpose | Standalone Initialization | Auto-Reindex? |
+|-------|---------|---------------------------|---------------|
 | **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
 | **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
 | **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
 
-**Combined Single-Pass Sync** (eliminates duplicate AST parsing):
-| **Combined Sync** | Updates both Semantic Index (code_chunks, global_symbols, global_calls) AND Insight Graph (AST nodes, edges) in one atomic operation | `nagato_sync_file_all(file_rel_path="path/to/file.py")` | ❌ Manual per file |
+**Combined Single-Pass Sync** (eliminates duplicate AST parsing — updates both Semantic Index AND Insight Graph in one atomic operation):
+| Tool | Scope | Use Case |
+|------|-------|----------|
+| `nagato_sync_file_all(file_rel_path="path/to/file.py")` | Single file | Incremental updates after editing a file |
+| `nagato_sync_directory_all(root_dir=".")` | Entire project | Full project sync, CI/bootstrap |
 
 **The `docstring_only` config applies ONLY to Semantic Search embeddings, not Symbol DB or Insight Graph.**
 
