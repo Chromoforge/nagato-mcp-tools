@@ -2,6 +2,28 @@
 
 Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## [Unreleased]
+
+### Added
+- **Wikipedia Tool Suite** (`fsm/functions_internal/wikipedia.py`, `fsm/tool_categories.py`, `fsm/tool_registry_builder.py`): New dedicated `WIKIPEDIA` tool category with 5 tools for local vector similarity search and live API fallback over Wikipedia encyclopedic knowledge:
+  - `nagato_wikipedia_search`: Two-stage search returning compact preview snippets, distance scores, and section metadata without polluting LLM context
+  - `nagato_wikipedia_fetch`: Targeted full-text retrieval for specific articles or sections identified during search
+  - `nagato_wikipedia_api_search`: Live Wikipedia REST API fallback when local dumps not yet indexed
+  - `nagato_wikipedia_init`: Idempotent SQLite database and `sqlite-vec` virtual table initialization
+  - `nagato_wikipedia_status`: Database statistics (article count, chunk count, index size, vector engine status)
+- **Two-Stage Search → Fetch Pattern**: Token-conservative retrieval architecture using `jinaai/jina-embeddings-v2-base-en` (768-dim) embeddings with `sqlite-vec` virtual tables
+- **Standalone Integration** (`fsm/function_facade.py`, `sync_tools.py`): Wikipedia tools registered in standalone facade, synced to `nagato_tools` package, and exposed via MCP server
+- **Configuration Schema** (`fsm/functions_internal/config.py`): New `WikipediaConfig` dataclass with `db_path`, `embedding_model`, `dimension`, `chunk_size`, `chunk_overlap`, `batch_size`, `device` options
+
+### Changed
+- **Tool Count Update** (`sync_tools.py`): Base standalone tool count increased from 31 to 36 (36 standard + 15 Insight = 51 total when Insight enabled)
+- **Landing Page Manifest** (`sync_tools.py`): Added "Wikipedia & Knowledge Retrieval" category to exported `tools.json`
+- **README Documentation** (`README.md`, `.mcptools/MCP_TOOLS_README.md`): Expanded both READMEs with Wikipedia tool suite documentation, configuration examples, and category listings
+- **Category Mapping** (`fsm/function_facade.py`): Added `finalize_handler` → `ToolCategory.FINALIZE` and `wikipedia` → `ToolCategory.WIKIPEDIA` mappings; fixed `_get_tool_category_for_tool` signature
+
+### Fixed
+- **Standalone Facade Category Resolution** (`fsm/function_facade.py`): All 42 registered standalone tools now cleanly resolve to their respective `ToolCategory` (no UNKNOWN entries) 
+
 ## [0.2.4] - 2026-10-08
 
 ### Changed

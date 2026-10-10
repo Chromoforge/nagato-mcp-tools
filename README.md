@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Repo: Chromoforge/nagato-mcp-tools](https://img.shields.io/badge/repo-Chromoforge%2Fnagato--mcp--tools-blue.svg)](https://github.com/Chromoforge/nagato-mcp-tools)
 
-> **Agent-First MCP Toolkit** — 31 code search, editing, execution, and analysis tools exposed directly over the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). Fully standalone and compatible with any MCP client (VS Code, Claude Desktop, Cursor, etc.).
+> **Agent-First MCP Toolkit** — 36 code search, editing, execution, and analysis tools exposed directly over the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). Fully standalone and compatible with any MCP client (VS Code, Claude Desktop, Cursor, etc.).
 >
 > Licensed under the **MIT License**. See [LICENSE](LICENSE) for full terms.
 
@@ -17,6 +17,7 @@
 - ✏️ **Precise Code Editing:** Exact substring replacements, line-range edits, safe renames/deletes.
 - ⏪ **Granular Undo/Redo:** Multi-mode undo/redo (steps, time, command, step-target) — rollback edits, shell commands, or entire workflows with precision.
 - ⚡ **Execution & Scripting:** Python code snippet execution with timeout limits and isolated subprocess execution (Note: NOT an OS sandbox; executes with local user permissions).
+- 📚 **Wikipedia & Vector Retrieval:** High-performance local vector similarity search (`sqlite-vec` + `jina-embeddings-v2-base-en`) and live API search fallback over encyclopedic knowledge with token-conserving Two-Stage Search → Fetch retrieval.
 - 🧪 **Testing & Quality:** Targeted pytest execution (`nagato_run_test`), configured test suites, and integrated Ruff linting/syntax checks.
 - 🧰 **Git & Shell:** Git log/diff/status/revert, shell execution, DuckDuckGo web search, and interactive prompts.
 - 🧠 **Smart Pre-Parsing:** Automatic input validation and auto-correction before tool execution — catches malformed arguments early.
@@ -243,7 +244,7 @@ The instructions guide the LLM to:
 
 ---
 
-## 🛠️ Registered Tools (31 Tools)
+## 🛠️ Registered Tools (36 Tools)
 
 | Category | Available Tools | Description |
 |---|---|---|
@@ -255,10 +256,28 @@ The instructions guide the LLM to:
 | **Lint & Quality** | `nagato_lint` | Syntax checking and automated Ruff linting. |
 | **Testing** | `nagato_run_test`<br>`nagato_run_gold_full`<br>`nagato_run_configured_suite` | Run single pytest test nodes or configured test suites. |
 | **Git** | `nagato_git`<br>`nagato_upload` | Git operations (diff, log, status, revert, checkout) and guarded uploads. |
+| **Wikipedia** | `nagato_wikipedia_search`<br>`nagato_wikipedia_fetch`<br>`nagato_wikipedia_api_search`<br>`nagato_wikipedia_init`<br>`nagato_wikipedia_status` | Local vector similarity search and live API search over Wikipedia. Employs a Two-Stage Search → Fetch pattern (search returns snippet previews; fetch retrieves full text/sections) using `sqlite-vec` and `jina-embeddings-v2-base-en`. |
 | **Shell** | `nagato_shell`<br>`nagato_shell_str` | Shell command execution (string and structured output). |
 | **Web** | `nagato_web_search` | DuckDuckGo web search. |
 | **System** | `nagato_is_agent_running` | Agent monitoring. |
 | **Creation** | `nagato_generate_uuid4` | UUID generation for session bootstrap. |
+
+---
+
+### System Initialization (Three Independent Systems + Combined Sync)
+
+**There is no single "init all" function.** The three data systems are independent and must be initialized separately:
+
+| System | Purpose | Initialization Tool | Auto-Reindex? |
+|--------|---------|---------------------|---------------|
+| **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
+| **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
+| **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
+
+**Combined Single-Pass Sync** (eliminates duplicate AST parsing):
+| **Combined Sync** | Updates both Semantic Index (code_chunks, global_symbols, global_calls) AND Insight Graph (AST nodes, edges) in one atomic operation | `nagato_sync_file_all(file_rel_path="path/to/file.py")` | ❌ Manual per file |
+
+**The `docstring_only` config applies ONLY to Semantic Search embeddings, not Symbol DB or Insight Graph.**
 
 ---
 
@@ -308,14 +327,14 @@ Control which tools are available via:
 ```json
 {
   "tool_filtering": {
-    "allowed_categories": ["READ", "SEARCH", "EXECUTE"],
+    "allowed_categories": ["READ", "SEARCH", "WIKIPEDIA", "EXECUTE"],
     "denied_tools": ["nagato_shell", "nagato_git", "nagato_upload"]
     // "allowed_tools": ["nagato_read_file", "nagato_searchInFile"]  // Alternative: explicit allowlist
   }
 }
 ```
 
-**Category names** match `ToolCategory` enum: `EDIT`, `TESTING`, `GIT`, `SEARCH`, `WEB`, `READ`, `EXECUTE`, `DEBUGGING`, `SYSTEM`, `SHELL`, `CREATION`, `PLANNING`.
+**Category names** match `ToolCategory` enum: `EDIT`, `TESTING`, `GIT`, `SEARCH`, `WEB`, `READ`, `EXECUTE`, `DEBUGGING`, `SYSTEM`, `SHELL`, `CREATION`, `PLANNING`, `WIKIPEDIA`.
 
 ### 2. Explicit Parameters (Override Config)
 ```python
@@ -370,6 +389,16 @@ Standalone tool behaviors (Semantic Search, Ruff Linting, and Output Truncation)
     "embedding_model": "jina",
     "dimension": 768,
     "auto_index": true
+  },
+  "wikipedia": {
+    "db_path": "~/.nagato/wikipedia/vec.db",
+    "embedding_model": "jinaai/jina-embeddings-v2-base-en",
+    "dimension": 768,
+    "auto_index": false,
+    "chunk_size": 1500,
+    "chunk_overlap": 150,
+    "batch_size": 256,
+    "device": "auto"
   },
   "lint": {
     "enabled": true,
@@ -451,6 +480,16 @@ Here's a full `.nagato/functions_config.json` showing all available options:
     "auto_index": true,
     "docstring_only": false
   },
+  "wikipedia": {
+    "db_path": "~/.nagato/wikipedia/vec.db",
+    "embedding_model": "jinaai/jina-embeddings-v2-base-en",
+    "dimension": 768,
+    "auto_index": false,
+    "chunk_size": 1500,
+    "chunk_overlap": 150,
+    "batch_size": 256,
+    "device": "auto"
+  },
   "lint": {
     "enabled": true,
     "soft_mode": true,
@@ -472,7 +511,8 @@ Here's a full `.nagato/functions_config.json` showing all available options:
 **Key Points:**
 - **`tool_filtering`** — Controls which tools are available (see [Tool Filtering](#-tool-filtering))
 - **`insight`** — Enables the knowledge graph (requires `[semantic]` extra)
-- **`semantic_search`** — Vector search configuration
+- **`semantic_search`** — Vector search configuration for local codebase symbols and chunks
+- **`wikipedia`** — Vector similarity and API search configuration for Wikipedia encyclopedic dumps
 - **`lint`** — Ruff linting behavior
 - **`tool_token_limits`** — Output truncation per category (0 = unlimited)
 - **`redundant_read_detection`** — Warns when reading the same unchanged file multiple times (`enabled`: toggle feature, `warn_only`: only prepend warning, never block)
