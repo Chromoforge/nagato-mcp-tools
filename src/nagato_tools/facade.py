@@ -87,7 +87,50 @@ class ToolFacade:
         self._filter_allowed_categories: Set[ToolCategory] = set(allowed_categories) if allowed_categories else set()
         self._filter_config_loaded: bool = False
         
+        self._bootstrap_workspace()
         self._build_registry()
+
+    def _bootstrap_workspace(self) -> None:
+        """Bootstrap the .nagato workspace structure, directories, and default configurations."""
+        try:
+            nagato_dir = self._workspace_root / ".nagato"
+            nagato_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. Directories
+            for subdir in ("redo_cache", "sessions", "standalone", "undo_cache"):
+                (nagato_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+            # 2. functions_config.json
+            fn_cfg_path = nagato_dir / "functions_config.json"
+            if not fn_cfg_path.exists():
+                try:
+                    from nagato_tools.config import FunctionsConfig, _write_functions_config
+                    _write_functions_config(FunctionsConfig(), fn_cfg_path)
+                except Exception:
+                    pass
+
+            # 3. standalone.yaml
+            standalone_yaml_path = nagato_dir / "standalone.yaml"
+            if not standalone_yaml_path.exists():
+                standalone_yaml_content = (
+                    "# Standalone Mode Tool Filtering Configuration\n"
+                    "# This file controls which tools are available in standalone mode (no FSM)\n"
+                    "#\n"
+                    "# All keys are optional. Empty dict means no filtering.\n"
+                    "#\n"
+                    "# allowed_tools: List[str] — allowlist of tool names\n"
+                    "# denied_tools: List[str] — denylist of tool names\n"
+                    "# allowed_categories: List[str] — category-level allowlist\n\n"
+                    "denied_tools:\n"
+                    '  - "nagato_shell"\n'
+                    '  - "nagato_upload"\n'
+                )
+                try:
+                    standalone_yaml_path.write_text(standalone_yaml_content, encoding="utf-8")
+                except Exception:
+                    pass
+        except Exception:
+            pass
     
     @property
     def context(self) -> Union[Any, MockFSMContext]:
