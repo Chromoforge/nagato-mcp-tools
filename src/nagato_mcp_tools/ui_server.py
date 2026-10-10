@@ -55,6 +55,24 @@ from nagato_tools.telemetry import (
 )
 from nagato_tools.undo import get_standalone_undo_status
 
+try:
+    from nagato_tools.workspace_registry import (
+        is_workspace_allowed,
+        list_registered_workspaces,
+        register_workspace,
+    )
+except ImportError:
+    try:
+        from fsm.workspace_registry import (
+            is_workspace_allowed,
+            list_registered_workspaces,
+            register_workspace,
+        )
+    except ImportError:
+        register_workspace = None
+        list_registered_workspaces = None
+        is_workspace_allowed = None
+
 DEFAULT_SESSION_ID = "standalone"
 STANDALONE_SESSION_ID = DEFAULT_SESSION_ID
 
@@ -152,6 +170,11 @@ def create_app(workspace_root: Optional[Union[str, Path]] = None, session_id: Op
     ws_root = Path(workspace_root or Path.cwd()).resolve()
     resolved_session_id = _resolve_session_id(session_id)
     sanitized_session_id = _sanitize_session_id(resolved_session_id)
+    if register_workspace:
+        try:
+            register_workspace(ws_root, session_id=sanitized_session_id)
+        except Exception:
+            pass
     set_workspace_root(ws_root)
     facade = ToolFacade(workspace_root=ws_root, session_id=sanitized_session_id)
 
@@ -197,13 +220,29 @@ def create_app(workspace_root: Optional[Union[str, Path]] = None, session_id: Op
         }
 
     @app.get("/api/v1/standalone/sessions", tags=["standalone"])
-    async def list_standalone_sessions_endpoint():
+    async def list_standalone_sessions_endpoint(
+        workspace: Optional[str] = Query(None, description="Optional target workspace root"),
+    ):
         """List all available standalone sessions."""
-        sessions = await asyncio.to_thread(list_standalone_sessions, ws_root)
+        target_ws = ws_root
+        if workspace:
+            parsed_ws = Path(workspace).resolve()
+            if is_workspace_allowed and is_workspace_allowed(parsed_ws, fallback_workspace=ws_root):
+                target_ws = parsed_ws
+        sessions = await asyncio.to_thread(list_standalone_sessions, target_ws)
         return {
             "sessions": sessions,
             "count": len(sessions),
+            "workspace_root": str(target_ws),
         }
+
+    @app.get("/api/v1/standalone/workspaces", tags=["standalone"])
+    async def list_standalone_workspaces_endpoint():
+        """List all registered workspaces known to the system."""
+        if list_registered_workspaces:
+            items = await asyncio.to_thread(list_registered_workspaces)
+            return {"workspaces": items, "current": str(ws_root)}
+        return {"workspaces": [{"path": str(ws_root), "name": ws_root.name, "exists": True}], "current": str(ws_root)}
 
     @app.post("/api/v1/standalone/tools/{tool_name}", tags=["standalone"])
     async def call_standalone_tool(tool_name: str, request: StandaloneToolCallRequest):

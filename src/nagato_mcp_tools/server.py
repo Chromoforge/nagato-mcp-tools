@@ -25,6 +25,13 @@ from typing import Any
 from mcp.server import MCPServer
 from nagato_tools.ctx_mock import _resolve_session_id, _sanitize_session_id
 from nagato_tools.facade import ToolFacade, get_tool_facade
+try:
+    from nagato_tools.workspace_registry import register_workspace
+except ImportError:
+    try:
+        from fsm.workspace_registry import register_workspace
+    except ImportError:
+        register_workspace = None
 
 _LOGGER = logging.getLogger("nagato_mcp_tools.server")
 
@@ -135,6 +142,11 @@ class NagatoMCPServer:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         resolved_session_id = _resolve_session_id(session_id)
         sanitized_session_id = _sanitize_session_id(resolved_session_id)
+        if register_workspace:
+            try:
+                register_workspace(self.workspace_root, session_id=sanitized_session_id)
+            except Exception:
+                pass
         self.facade: ToolFacade = get_tool_facade(
             workspace_root=self.workspace_root,
             session_id=sanitized_session_id,
