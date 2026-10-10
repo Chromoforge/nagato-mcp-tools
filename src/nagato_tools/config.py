@@ -79,7 +79,9 @@ class FunctionsConfig:
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     insight: dict = field(default_factory=dict)
     tool_token_limits: dict[str, Any] = field(default_factory=dict)
-    tool_filtering: dict = field(default_factory=dict)  # allowed_tools, denied_tools, allowed_categories
+    tool_filtering: dict = field(default_factory=lambda: {
+        "denied_tools": ["nagato_shell", "nagato_upload", "nagato_is_agent_running"]
+    })  # allowed_tools, denied_tools, allowed_categories
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FunctionsConfig":
