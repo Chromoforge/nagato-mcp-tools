@@ -124,6 +124,7 @@ class ToolFacade:
                     "denied_tools:\n"
                     '  - "nagato_shell"\n'
                     '  - "nagato_upload"\n'
+                    '  - "nagato_is_agent_running"\n'
                 )
                 try:
                     standalone_yaml_path.write_text(standalone_yaml_content, encoding="utf-8")
@@ -230,7 +231,7 @@ class ToolFacade:
         import nagato_tools
         
         # List of modules to scan
-        modules_to_scan = ['edit', 'execute', 'search', 'read', 'lint', 'git', 'web', 'test', 'create', 'extractsignature', 'extractcallgraph', 'semanticindex', 'errors', 'config', 'undo', 'shell', 'monitor', 'token_calculator', 'action_journal']
+        modules_to_scan = ['edit', 'execute', 'search', 'read', 'lint', 'git', 'web', 'test', 'subgoals', 'create', 'debugger', 'extractsignature', 'extractcallgraph', 'semanticindex', 'errors', 'system', 'shell', 'monitor', 'undo', 'wikipedia', 'token_calculator', 'action_journal']
         
         for module_name in modules_to_scan:
             try:
