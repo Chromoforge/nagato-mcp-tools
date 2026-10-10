@@ -142,6 +142,45 @@ def get_config_path(ctx: Optional[Any] = None) -> Path:
     return _get_workspace_root(ctx) / ".nagato" / "functions_config.json"
 
 
+def _write_functions_config(config: FunctionsConfig, config_path: Path) -> None:
+    """Write FunctionsConfig to JSON file."""
+    # Convert config to dictionary for JSON serialization
+    data = {
+        "ignored_dirs": config.ignored_dirs,
+        "insight": config.insight,
+        "tool_token_limits": config.tool_token_limits,
+        "tool_filtering": config.tool_filtering,
+        "wikipedia": {
+            "db_path": config.wikipedia.db_path,
+            "embedding_model": config.wikipedia.embedding_model,
+            "dimension": config.wikipedia.dimension,
+            "dump_cache_dir": config.wikipedia.dump_cache_dir,
+            "chunk_size": config.wikipedia.chunk_size,
+        },
+        "semantic_search": {
+            "db_path": config.semantic_search.db_path,
+            "embedding_model": config.semantic_search.embedding_model,
+            "model_cache_dir": config.semantic_search.model_cache_dir,
+            "dimension": config.semantic_search.dimension,
+            "auto_index": config.semantic_search.auto_index,
+            "search_root": config.semantic_search.search_root,
+            "search_dirs": config.semantic_search.search_dirs,
+            "docstring_only": config.semantic_search.docstring_only,
+        },
+        "lint": {
+            "enabled": config.lint.enabled,
+            "soft_mode": config.lint.soft_mode,
+            "auto_fix": config.lint.auto_fix,
+            "ruff_path": config.lint.ruff_path,
+            "select": config.lint.select,
+            "ignore": config.lint.ignore,
+        }
+    }
+    
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
 def load_functions_config(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> FunctionsConfig:
     """
     Load functions configuration from JSON file.
@@ -157,7 +196,13 @@ def load_functions_config(config_path: Optional[Path] = None, ctx: Optional[Any]
         config_path = get_config_path(ctx)
     
     if not config_path.exists():
-        return FunctionsConfig()  # Return defaults
+        # Create default config and save it to file
+        default_config = FunctionsConfig()
+        # Ensure the directory exists
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write default config to file
+        _write_functions_config(default_config, config_path)
+        return default_config
     
     try:
         with config_path.open("r", encoding="utf-8") as f:
