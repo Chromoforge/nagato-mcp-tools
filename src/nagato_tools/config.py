@@ -61,10 +61,21 @@ class LintConfig:
 
 
 @dataclass
+class WikipediaConfig:
+    """Configuration for local Wikipedia vector database."""
+    db_path: str = ""  # If empty, defaults to ~/.nagato/wikipedia/vec.db
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    dimension: int = 384
+    dump_cache_dir: str = ""  # If empty, defaults to ~/.nagato/wikipedia/dumps
+    chunk_size: int = 512  # Paragraph/chunk target token length
+
+
+@dataclass
 class FunctionsConfig:
     """Root configuration for all functions_internal modules."""
     semantic_search: SemanticSearchConfig = field(default_factory=SemanticSearchConfig)
     lint: LintConfig = field(default_factory=LintConfig)
+    wikipedia: WikipediaConfig = field(default_factory=WikipediaConfig)
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     insight: dict = field(default_factory=dict)
     tool_token_limits: dict[str, Any] = field(default_factory=dict)
@@ -82,6 +93,15 @@ class FunctionsConfig:
             config.tool_token_limits = data["tool_token_limits"]
         if "tool_filtering" in data and isinstance(data["tool_filtering"], dict):
             config.tool_filtering = data["tool_filtering"]
+        if "wikipedia" in data and isinstance(data["wikipedia"], dict):
+            wp_data = data["wikipedia"]
+            config.wikipedia = WikipediaConfig(
+                db_path=wp_data.get("db_path", ""),
+                embedding_model=wp_data.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
+                dimension=wp_data.get("dimension", 384),
+                dump_cache_dir=wp_data.get("dump_cache_dir", ""),
+                chunk_size=wp_data.get("chunk_size", 512),
+            )
         if "semantic_search" in data:
             ss_data = data["semantic_search"]
             config.semantic_search = SemanticSearchConfig(

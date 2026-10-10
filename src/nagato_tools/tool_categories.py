@@ -36,6 +36,7 @@ class ToolCategory(Enum):
     PLANNING = auto()
     INSIGHT = auto()
     FINALIZE = auto()
+    WIKIPEDIA = auto()
 
     @property
     def display_name(self) -> str:
@@ -191,6 +192,13 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
         example_tools=["nagato_finalize_retry", "nagato_finalize_skip"],
         purpose="Use to retry or skip upload and issue resolution in FINALIZE state.",
         allows_state_changes=True,
+    ),
+    ToolCategory.WIKIPEDIA: CategoryMeta(
+        description="Wikipedia vector search tools (local SQLite + sqlite-vec with Jina embeddings).",
+        group=CategoryGroup.READ_ONLY,
+        example_tools=["nagato_wikipedia_search", "nagato_wikipedia_fetch", "nagato_wikipedia_init", "nagato_wikipedia_status", "nagato_wikipedia_api_search"],
+        purpose="Use to search Wikipedia content via local vector database or REST API, and fetch full articles or sections.",
+        allows_state_changes=False,
     ),
 }
 

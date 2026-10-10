@@ -24,6 +24,7 @@ from .config import *
 from .undo import *
 from .shell import *
 from .monitor import *
+from .wikipedia import *
 from ._post_edit_safety import *
 from .input_repair import *
 
@@ -62,6 +63,11 @@ __all__ = [
     "nagato_shell",
     "nagato_shell_str",
     "nagato_is_agent_running",
+    "nagato_wikipedia_search",
+    "nagato_wikipedia_fetch",
+    "nagato_wikipedia_api_search",
+    "nagato_wikipedia_init",
+    "nagato_wikipedia_status",
     "ToolFacade",
     "get_tool_facade",
 ]

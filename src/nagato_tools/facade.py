@@ -156,6 +156,8 @@ class ToolFacade:
             'shell': ToolCategory.SHELL,
             'monitor': ToolCategory.SYSTEM,
             'undo': ToolCategory.EDIT,  # undo modifies state
+            'wikipedia': ToolCategory.WIKIPEDIA,
+            'finalize_handler': ToolCategory.FINALIZE,
         }
         return module_to_category.get(module_name)
     
@@ -621,13 +623,13 @@ class ToolFacade:
     def _get_tool_category_for_tool(self, tool_name: str) -> Optional[ToolCategory]:
         """Get category for a registered tool by looking up its source module.
 
-        Delegates to `_get_tool_category(module_name)` which holds the
+        Delegates to `_get_tool_category(module_name, tool_name)` which holds the
         canonical module→category mapping.
         """
         module_name = self._tool_modules.get(tool_name)
         if module_name is None:
             return None
-        return self._get_tool_category(module_name)
+        return self._get_tool_category(module_name, tool_name)
     
     def _rebuild_registry(self) -> None:
         """Rebuild the entire registry from scratch (used after filter changes)."""
