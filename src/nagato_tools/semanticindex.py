@@ -269,95 +269,6 @@ def _format_window_header(prefix: str, total_hits: int, start_offset: int, retur
     return header
 
 
-class EmbeddingModels:
-    """Manages the initialization and provision of text embedding models.
-
-    Supports various embedding providers (e.g., BAAI, Jina) and configures
-    them by default for local execution with CUDA acceleration.
-
-    Attributes:
-        model (str): Name of the chosen embedding provider in lowercase.
-        dimension (int): Vector dimension of the chosen model.
-        Embedding (TextEmbedding): The FastEmbed instance for BAAI.
-    """
-
-    def __init__(self, model: str, cache_dir: str = ""):
-        """Initializes the model configuration.
-
-        Args:
-            model (str): Name of the model ('baai' or 'jina').
-            cache_dir (str): Optional cache directory for model weights.
-        """
-        self.model = model.lower()
-        self.dimension = 768 if self.model == "jina" else 384
-        self.cache_dir = cache_dir
-        self.Embedding = self.getModel()
-
-    def getModel(self) -> TextEmbedding:
-        """Selects the appropriate model based on the choice.
-
-        Returns:
-            TextEmbedding: The configured FastEmbed instance.
-
-        Raises:
-            ValueError: If an unknown model name is passed.
-        """
-        if self.model == "baai":
-            return self.getBAAI()
-        elif self.model == "jina":
-            return self.getJina()
-        else:
-            raise ValueError(
-                f"Unknown model: {self.model}. Available models: 'baai', 'jina'."
-            )
-
-    def getBAAI(self) -> TextEmbedding:
-        """Initializes the BAAI/bge-small-en-v1.5 model.
-
-        Suitable for general, short text passages. Saves VRAM through smaller
-        context length.
-
-        Returns:
-            TextEmbedding: The FastEmbed instance for BAAI.
-        """
-        kwargs = {
-            "model_name": "BAAI/bge-small-en-v1.5",
-            "providers": ["CPUExecutionProvider"],
-            "max_length": 512,
-        }
-        if self.cache_dir:
-            kwargs["cache_dir"] = self.cache_dir
-        return TextEmbedding(**kwargs)
-
-    def getJina(self) -> TextEmbedding:
-        """Initializes the jinaai/jina-embeddings-v2-base-code model.
-
-        Optimized for code representations and larger context windows.
-
-        Returns:
-            TextEmbedding: The FastEmbed instance for Jina Code.
-        """
-        kwargs = {
-            "model_name": "jinaai/jina-embeddings-v2-base-code",
-            "providers": ["CPUExecutionProvider"],
-            "max_length": 2048,
-        }
-        if self.cache_dir:
-            kwargs["cache_dir"] = self.cache_dir
-        return TextEmbedding(**kwargs)
-
-    def get_max_chunk_chars(self) -> int:
-        """Returns the maximum chunk size in characters based on model's max_length.
-        
-        Approximates: 1 token ≈ 4 characters for code.
-        """
-        if self.model == "baai":
-            return 512 * 4  # ~2048 chars
-        elif self.model == "jina":
-            return 2048 * 4  # ~8192 chars
-        return 8000  # fallback
-
-
 class SemanticIndexSearch:
     """Enables semantic vector search over a codebase using SQLite and sqlite-vec.
 
@@ -383,7 +294,6 @@ class SemanticIndexSearch:
         """
         self.conn = None
         self._model = None
-        self._model_wrapper = None
         
         # Load configuration
         if config is None:
@@ -404,13 +314,31 @@ class SemanticIndexSearch:
             
         self.init_vector_db(self.db_path)
 
+    def _get_model_name(self) -> str:
+        """Get the FastEmbed model name for the current embedding_model setting."""
+        if self.embedding_model == "baai":
+            return "BAAI/bge-small-en-v1.5"
+        elif self.embedding_model == "jina":
+            return "jinaai/jina-embeddings-v2-base-code"
+        return "jinaai/jina-embeddings-v2-base-code"
+
+    def _get_max_chunk_chars(self) -> int:
+        """Returns the maximum chunk size in characters based on model's max_length.
+        
+        Approximates: 1 token ≈ 4 characters for code.
+        """
+        if self.embedding_model == "baai":
+            return 512 * 4  # ~2048 chars
+        elif self.embedding_model == "jina":
+            return 2048 * 4  # ~8192 chars
+        return 8000  # fallback
+
     @property
     def Model(self):
-        """Lazy-loads the embedding model on first access."""
+        """Lazy-loads the embedding model on first access using centralized embedder."""
         if self._model is None:
-            self._model_wrapper = EmbeddingModels(self.embedding_model, self.model_cache_dir)
-            self._model = self._model_wrapper.Embedding
-            self.dimension = self._model_wrapper.dimension
+            from nagato_tools.insight_embedder import _get_fastembed_model
+            self._model = _get_fastembed_model(self._get_model_name())
         return self._model
 
     def init_vector_db(self, db_path: str = None) -> sqlite3.Connection:
@@ -439,13 +367,16 @@ class SemanticIndexSearch:
             logger.debug("Vector support disabled: fastembed is not installed or available.")
 
         with self.conn:
-            # Existing chunks for vector search
+            # Existing chunks for vector search - EXTENDED with AST anchoring
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS code_chunks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     file_path TEXT,
                     line_number INTEGER,
-                    content TEXT
+                    content TEXT,
+                    symbol_name TEXT DEFAULT '',
+                    node_id TEXT DEFAULT '',
+                    chunk_type TEXT DEFAULT 'code'
                 )
             """)
             if self.has_vector_support:
@@ -532,9 +463,9 @@ class SemanticIndexSearch:
             # KNN search over the virtual table with join on the content table
             cursor.execute(
                 """
-                SELECT file_path, line_number, content, distance
+                SELECT file_path, line_number, content, symbol_name, node_id, chunk_type, distance
                 FROM (
-                    SELECT c.file_path, c.line_number, c.content, v.distance
+                    SELECT c.file_path, c.line_number, c.content, c.symbol_name, c.node_id, c.chunk_type, v.distance
                     FROM vec_code_chunks v
                     JOIN code_chunks c ON c.id = v.chunk_id
                     WHERE embedding_vector MATCH ? AND k = ?
@@ -564,7 +495,7 @@ class SemanticIndexSearch:
         )
 
         results = [
-            f"Match in {r[0]} (Line {r[1]}) [Distance: {r[3]:.4f}]:\n{r[2][:200]}...\n"
+            f"Match in {r[0]} (Line {r[1]}) [Distance: {r[6]:.4f}] Symbol: {r[3] or 'N/A'} Type: {r[5] or 'code'} NodeID: {r[4] or 'N/A'}:\n{r[2][:200]}...\n"
             for r in rows
         ]
         return header + ":\n" + "\n".join(results)
@@ -598,49 +529,111 @@ class SemanticIndexSearch:
             logger.error(f"Unexpected AST parsing error in {stored_path}: {str(e)}")
             raise  # Re-raise to ensure the error is not silently ignored
 
-        # 1. Fire AST extractions for symbols and calls
-        try:
-            sig_extractor = SignatureExtractor(str(abs_path))
-            extracted_sigs = sig_extractor.extract()  # returns a list of dicts
-            
-            cg_builder = CallgraphBuilder(str(abs_path))
-            call_data = cg_builder.build()  # returns {"calls": ..., "called_from": ...}
-        except Exception as e:
-            logger.error(f"AST analysis failed for {stored_path}: {str(e)}")
-            raise  # Re-raise to ensure the error is not silently ignored
+        # Check if this is a Python file for AST-based chunking
+        is_python_file = abs_path.suffix == ".py"
+        
+        # 1. Fire AST extractions for symbols and calls (Python only)
+        extracted_sigs = []
+        call_data = {"calls": {}, "called_from": {}}
+        if is_python_file:
+            try:
+                sig_extractor = SignatureExtractor(str(abs_path))
+                extracted_sigs = sig_extractor.extract()  # returns a list of dicts
+                
+                cg_builder = CallgraphBuilder(str(abs_path))
+                call_data = cg_builder.build()  # returns {"calls": ..., "called_from": ...}
+            except Exception as e:
+                logger.error(f"AST analysis failed for {stored_path}: {str(e)}")
+                raise  # Re-raise to ensure the error is not silently ignored
 
-        # 2. Collect logical code chunks for vector search (AST-aware splitting)
+        # 2. Collect logical code chunks for vector search
         chunks, metas = [], []
-        max_chunk_chars = self._model_wrapper.get_max_chunk_chars() if self._model_wrapper else 8000
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if getattr(self, "docstring_only", False):
-                    # Docstring-only mode: embed only the docstring
-                    doc = ast.get_docstring(node)
-                    if doc:
-                        chunks.append(doc)
-                        metas.append({
-                            "file": stored_path,
-                            "line": node.lineno,
-                            "name": node.name,
-                        })
-                else:
-                    # Full code mode (default): embed the entire function/class body
-                    segment = ast.get_source_segment(source_code, node)
-                    if segment:
-                        # Use AST-aware splitting for large chunks
-                        if len(segment) <= max_chunk_chars:
-                            chunk_texts = [segment]
-                        else:
-                            chunk_texts = _split_large_chunk_ast_aware(source_code, node, max_chunk_chars)
-                        
-                        for chunk_text in chunk_texts:
-                            chunks.append(chunk_text)
+        max_chunk_chars = self._get_max_chunk_chars()
+        
+        # Build a map from qualname to Insight node_id for linking
+        # This will be populated after Insight sync, but we can try to get it from the store
+        insight_node_ids = {}
+        try:
+            from nagato_tools.config import get_workspace_root
+            from nagato_tools.insight_store import InsightStore
+            insight_store = InsightStore(workspace_root=get_workspace_root())
+            # Get all COMPONENT nodes for this file
+            ast_nodes = insight_store.get_ast_nodes(origin_file=stored_path)
+            for n in ast_nodes:
+                if n.origin_symbol:
+                    insight_node_ids[n.origin_symbol] = n.id
+        except Exception:
+            pass  # Insight not available or no nodes yet
+        
+        if is_python_file:
+            # AST-based chunking for Python files
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    qualname = node.name
+                    # Try to get qualname from signatures
+                    for sig in extracted_sigs:
+                        if sig.get("symbol") == node.name and sig.get("qualname"):
+                            qualname = sig["qualname"]
+                            break
+                    
+                    chunk_type = "function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
+                    node_id = insight_node_ids.get(qualname, "")
+                    
+                    if getattr(self, "docstring_only", False):
+                        # Docstring-only mode: embed only the docstring
+                        doc = ast.get_docstring(node)
+                        if doc:
+                            chunks.append(doc)
                             metas.append({
                                 "file": stored_path,
                                 "line": node.lineno,
                                 "name": node.name,
+                                "symbol_name": qualname,
+                                "node_id": node_id,
+                                "chunk_type": chunk_type,
                             })
+                    else:
+                        # Full code mode (default): embed the entire function/class body
+                        segment = ast.get_source_segment(source_code, node)
+                        if segment:
+                            # Use AST-aware splitting for large chunks
+                            if len(segment) <= max_chunk_chars:
+                                chunk_texts = [segment]
+                            else:
+                                chunk_texts = _split_large_chunk_ast_aware(source_code, node, max_chunk_chars)
+                            
+                            for chunk_text in chunk_texts:
+                                chunks.append(chunk_text)
+                                metas.append({
+                                    "file": stored_path,
+                                    "line": node.lineno,
+                                    "name": node.name,
+                                    "symbol_name": qualname,
+                                    "node_id": node_id,
+                                    "chunk_type": chunk_type,
+                                })
+        else:
+            # Graceful fallback: sliding-window chunking for non-Python files
+            # Use a simple line-based sliding window
+            lines = source_code.splitlines(keepends=True)
+            window_size = max(1, max_chunk_chars // 80)  # Approximate lines per chunk
+            overlap = max(1, window_size // 4)  # 25% overlap
+            
+            for i in range(0, len(lines), window_size - overlap):
+                chunk_lines = lines[i:i + window_size]
+                if not chunk_lines:
+                    break
+                chunk_text = ''.join(chunk_lines)
+                if chunk_text.strip():  # Only add non-empty chunks
+                    chunks.append(chunk_text)
+                    metas.append({
+                        "file": stored_path,
+                        "line": i + 1,
+                        "name": f"chunk_{i // (window_size - overlap)}",
+                        "symbol_name": "",
+                        "node_id": "",
+                        "chunk_type": "standalone",
+                    })
 
         # Write DB entries
         with self.conn:
@@ -662,8 +655,8 @@ class SemanticIndexSearch:
                 # Use small batch_size=32 and parallel=1 to keep memory usage low
                 for code, meta, vec in zip(chunks, metas, self.Model.embed(chunks, batch_size=32, parallel=1)):
                     cursor.execute(
-                        "INSERT INTO code_chunks (file_path, line_number, content) VALUES (?, ?, ?)",
-                        (meta["file"], meta["line"], f"# {meta['name']}\n{code}"),
+                        "INSERT INTO code_chunks (file_path, line_number, content, symbol_name, node_id, chunk_type) VALUES (?, ?, ?, ?, ?, ?)",
+                        (meta["file"], meta["line"], f"# {meta['name']}\n{code}", meta.get("symbol_name", ""), meta.get("node_id", ""), meta.get("chunk_type", "code")),
                     )
                     # Convert to float32 for sqlite-vec (expects 4 bytes per float)
                     vec_f32 = vec.astype(np.float32)
@@ -877,6 +870,318 @@ class SemanticIndexSearch:
                     )
 
         return f"Symbol update: {len(extracted_sigs)} symbols updated in {file_rel_path}."
+
+    def sync_file_all(self, file_rel_path: str, ctx: Optional[Any] = None) -> str:
+        """
+        Combined single-pass sync: updates both the semantic index (code_chunks, global_symbols, global_calls)
+        and the Insight knowledge graph (AST nodes, edges) in one atomic operation.
+        
+        This eliminates duplicate AST parsing and embedding initialization.
+        
+        Args:
+            file_rel_path: Relative path to the file from workspace root
+            ctx: Optional FSM context
+            
+        Returns:
+            Summary string with combined results
+        """
+        workspace_root = _get_workspace_root(ctx)
+        target_file = (workspace_root / file_rel_path).resolve()
+
+        if not target_file.is_relative_to(workspace_root):
+            return f"ERROR: Path traversal detected. {file_rel_path} is outside workspace."
+            
+        file_rel_path = str(target_file.relative_to(workspace_root).as_posix())
+
+        if not target_file.exists():
+            return f"ERROR: File {file_rel_path} not found."
+
+        with target_file.open("r", encoding="utf-8", errors="replace") as f:
+            source_code = f.read()
+
+        try:
+            tree = ast.parse(source_code)
+        except SyntaxError as e:
+            logger.warning(f"Syntax error in {file_rel_path}: {str(e)}")
+            return f"Skipped: syntax error in {file_rel_path}"
+        except Exception as e:
+            logger.error(f"Unexpected AST parsing error in {file_rel_path}: {str(e)}")
+            raise
+
+        # 1. Fire AST extractions for symbols and calls (Python only)
+        extracted_sigs = []
+        call_data = {"calls": {}, "called_from": {}}
+        is_python_file = target_file.suffix == ".py"
+        
+        if is_python_file:
+            try:
+                sig_extractor = SignatureExtractor(str(target_file))
+                extracted_sigs = sig_extractor.extract()
+                
+                cg_builder = CallgraphBuilder(str(target_file))
+                call_data = cg_builder.build()
+            except Exception as e:
+                logger.error(f"AST analysis failed for {file_rel_path}: {str(e)}")
+                raise
+
+        # 2. Collect logical code chunks for vector search
+        chunks, metas = [], []
+        max_chunk_chars = self._get_max_chunk_chars()
+        
+        # Build a map from qualname to Insight node_id for linking
+        insight_node_ids = {}
+        try:
+            from nagato_tools.config import get_workspace_root
+            from nagato_tools.insight_store import InsightStore
+            insight_store = InsightStore(workspace_root=get_workspace_root())
+            ast_nodes = insight_store.get_ast_nodes(origin_file=file_rel_path)
+            for n in ast_nodes:
+                if n.origin_symbol:
+                    insight_node_ids[n.origin_symbol] = n.id
+        except Exception:
+            pass
+        
+        if is_python_file:
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    qualname = node.name
+                    for sig in extracted_sigs:
+                        if sig.get("symbol") == node.name and sig.get("qualname"):
+                            qualname = sig["qualname"]
+                            break
+                    
+                    chunk_type = "function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
+                    node_id = insight_node_ids.get(qualname, "")
+                    
+                    if getattr(self, "docstring_only", False):
+                        doc = ast.get_docstring(node)
+                        if doc:
+                            chunks.append(doc)
+                            metas.append({
+                                "file": file_rel_path,
+                                "line": node.lineno,
+                                "name": node.name,
+                                "symbol_name": qualname,
+                                "node_id": node_id,
+                                "chunk_type": chunk_type,
+                            })
+                    else:
+                        segment = ast.get_source_segment(source_code, node)
+                        if segment:
+                            if len(segment) <= max_chunk_chars:
+                                chunk_texts = [segment]
+                            else:
+                                chunk_texts = _split_large_chunk_ast_aware(source_code, node, max_chunk_chars)
+                            
+                            for chunk_text in chunk_texts:
+                                chunks.append(chunk_text)
+                                metas.append({
+                                    "file": file_rel_path,
+                                    "line": node.lineno,
+                                    "name": node.name,
+                                    "symbol_name": qualname,
+                                    "node_id": node_id,
+                                    "chunk_type": chunk_type,
+                                })
+        else:
+            # Graceful fallback: sliding-window chunking for non-Python files
+            lines = source_code.splitlines(keepends=True)
+            window_size = max(1, max_chunk_chars // 80)
+            overlap = max(1, window_size // 4)
+            
+            for i in range(0, len(lines), window_size - overlap):
+                chunk_lines = lines[i:i + window_size]
+                if not chunk_lines:
+                    break
+                chunk_text = ''.join(chunk_lines)
+                if chunk_text.strip():
+                    chunks.append(chunk_text)
+                    metas.append({
+                        "file": file_rel_path,
+                        "line": i + 1,
+                        "name": f"chunk_{i // (window_size - overlap)}",
+                        "symbol_name": "",
+                        "node_id": "",
+                        "chunk_type": "standalone",
+                    })
+
+        # 3. Write semantic index DB entries
+        with self.conn:
+            cursor = self.conn.cursor()
+            
+            cursor.execute(
+                "DELETE FROM vec_code_chunks WHERE chunk_id IN (SELECT id FROM code_chunks WHERE file_path = ?)",
+                (file_rel_path,),
+            )
+            cursor.execute("DELETE FROM code_chunks WHERE file_path = ?", (file_rel_path,))
+            cursor.execute("DELETE FROM global_symbols WHERE file_path = ?", (file_rel_path,))
+            cursor.execute("DELETE FROM global_calls WHERE file_path = ?", (file_rel_path,))
+            cursor.execute("DELETE FROM indexed_file_meta WHERE file_path = ?", (file_rel_path,))
+
+            if chunks and self.has_vector_support:
+                for code, meta, vec in zip(chunks, metas, self.Model.embed(chunks, batch_size=32, parallel=1)):
+                    cursor.execute(
+                        "INSERT INTO code_chunks (file_path, line_number, content, symbol_name, node_id, chunk_type) VALUES (?, ?, ?, ?, ?, ?)",
+                        (meta["file"], meta["line"], f"# {meta['name']}\n{code}", meta.get("symbol_name", ""), meta.get("node_id", ""), meta.get("chunk_type", "code")),
+                    )
+                    vec_f32 = vec.astype(np.float32)
+                    cursor.execute(
+                        "INSERT INTO vec_code_chunks (chunk_id, embedding_vector) VALUES (?, ?)",
+                        (cursor.lastrowid, vec_f32.tobytes()),
+                    )
+            
+            for sig in extracted_sigs:
+                decorators = f"@{', @'.join(sig['decorators'])} " if sig['decorators'] else ""
+                args = ", ".join([f"{a['name']}: {a['annotation'] or 'Any'}" for a in sig['args']])
+                ret = f" -> {sig['returns']}" if sig['returns'] else ""
+                doc = f"  # {sig['doc']}" if sig['doc'] else ""
+                formatted_sig = f"{decorators}{sig['kind']} {sig['symbol']}({args}){ret}:{doc}"
+                
+                cursor.execute(
+                    """
+                    INSERT INTO global_symbols (file_path, symbol_name, kind, line_number, signature_text)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (file_rel_path, sig["symbol"], sig["kind"], sig["line"], formatted_sig)
+                )
+
+            for caller, callees in call_data["calls"].items():
+                for callee in callees:
+                    cursor.execute(
+                        "INSERT INTO global_calls (file_path, caller, callee) VALUES (?, ?, ?)",
+                        (file_rel_path, caller, callee)
+                    )
+
+            try:
+                mtime = target_file.stat().st_mtime
+            except Exception:
+                mtime = 0.0
+            
+            cursor.execute(
+                "INSERT INTO indexed_file_meta (file_path, mtime) VALUES (?, ?)",
+                (file_rel_path, mtime),
+            )
+
+        # 4. Sync to Insight knowledge graph
+        insight_result = ""
+        try:
+            from nagato_tools.insight_ast_bridge import ASTInsightBridge
+            bridge = ASTInsightBridge()
+            insight_result = bridge.sync_file(target_file, flush_embeds=True)
+        except Exception as e:
+            logger.warning(f"Insight sync failed for {file_rel_path}: {str(e)}")
+            insight_result = f"Insight sync failed: {str(e)}"
+
+        return f"Indexed: {len(chunks)} chunks, {len(extracted_sigs)} symbols in {file_rel_path}. Insight: {insight_result}"
+
+    def sync_directory_all(self, root_dir: str = ".", *, external: bool = False, ctx: Optional[Any] = None,
+                           progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
+        """
+        Combined single-pass sync for an entire directory tree: updates both the semantic index 
+        (code_chunks, global_symbols, global_calls) and the Insight knowledge graph (AST nodes, edges)
+        in one atomic operation per file.
+        
+        This eliminates duplicate AST parsing and embedding initialization across the entire project.
+        
+        Args:
+            root_dir: Path to the target directory (relative to workspace root, or absolute if external=True)
+            external: If True, root_dir is treated as an absolute path outside the workspace
+            ctx: Optional session context for workspace root resolution
+            progress_callback: Optional callback(current, total, filename) for progress updates
+        
+        Returns:
+            Summary string with combined results
+        """
+        workspace_root = _get_workspace_root(ctx)
+        
+        if external:
+            target_root = Path(root_dir).resolve()
+            if not target_root.exists() or not target_root.is_dir():
+                return f"ERROR: {root_dir} does not exist or is not a directory."
+        else:
+            target_root = (workspace_root / root_dir).resolve()
+            if not target_root.is_relative_to(workspace_root):
+                return f"ERROR: Path traversal detected. {root_dir} is outside workspace."
+            if not target_root.exists() or not target_root.is_dir():
+                return f"ERROR: {root_dir} does not exist or is not a directory."
+
+        # Get ignored_dirs and search_dirs from functions_config.json (works for both FSM and standalone)
+        ignored_dirs = get_ignored_dirs(ctx=ctx)
+        semantic_config = get_semantic_search_config(ctx=ctx)
+        search_dirs = semantic_config.search_dirs if semantic_config else []
+        
+        # Collect files first for progress tracking
+        python_files = []
+        
+        if search_dirs and not external:
+            # Whitelist mode: only scan specified subdirectories
+            for search_dir in search_dirs:
+                search_path = (workspace_root / search_dir).resolve()
+                if not search_path.exists() or not search_path.is_dir():
+                    continue
+                try:
+                    search_path.relative_to(target_root)
+                except ValueError:
+                    continue
+                
+                for file_path in search_path.rglob("*.py"):
+                    parts = file_path.relative_to(target_root).parts
+                    if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                        continue
+                    python_files.append(file_path)
+        else:
+            # Blacklist mode (default): scan everything except ignored_dirs
+            for file_path in target_root.rglob("*.py"):
+                parts = file_path.relative_to(target_root).parts
+                if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                    continue
+                python_files.append(file_path)
+        
+        # Initialize Insight bridge once for the entire directory
+        insight_bridge = None
+        try:
+            from nagato_tools.insight_ast_bridge import ASTInsightBridge
+            insight_bridge = ASTInsightBridge()
+        except Exception as e:
+            logger.warning(f"Could not initialize Insight bridge: {str(e)}")
+        
+        indexed_count = 0
+        skipped_count = 0
+        error_count = 0
+        total_files = len(python_files)
+        
+        for i, file_path in enumerate(python_files):
+            if external:
+                stored_path = file_path.resolve().as_posix()
+            else:
+                stored_path = str(file_path.relative_to(workspace_root).as_posix())
+            
+            if progress_callback:
+                progress_callback(i + 1, total_files, stored_path)
+            
+            logger.info(f"Syncing [{i+1}/{total_files}]: {stored_path}")
+            
+            try:
+                # Use the single-file sync method
+                result = self.sync_file_all(stored_path, ctx)
+                if "Indexed:" in result:
+                    indexed_count += 1
+                elif "Skipped:" in result or "ERROR:" in result or "not found" in result:
+                    skipped_count += 1
+                else:
+                    error_count += 1
+            except Exception as e:
+                logger.error(f"Failed to sync {stored_path}: {str(e)}")
+                error_count += 1
+        
+        # Flush any pending Insight embeddings
+        if insight_bridge:
+            try:
+                insight_bridge._flush_pending_embeds()
+            except Exception as e:
+                logger.warning(f"Failed to flush Insight embeddings: {str(e)}")
+        
+        return f"Synced {indexed_count} files ({skipped_count} skipped, {error_count} errors) under {target_root}."
 
     def rebuild_symbol_db(self, target_dir: str = None, ctx: Optional[Any] = None,
                           progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
