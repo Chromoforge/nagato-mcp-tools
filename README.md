@@ -17,7 +17,7 @@
 - ✏️ **Precise Code Editing:** Exact substring replacements, line-range edits, safe renames/deletes.
 - ⏪ **Granular Undo/Redo:** Multi-mode undo/redo (steps, time, command, step-target) — rollback edits, shell commands, or entire workflows with precision.
 - ⚡ **Execution & Scripting:** Python code snippet execution with timeout limits and isolated subprocess execution (Note: NOT an OS sandbox; executes with local user permissions).
-- 📚 **Wikipedia & Vector Retrieval:** High-performance local vector similarity search (`sqlite-vec` + `jina-embeddings-v2-base-en`) and live API search fallback over encyclopedic knowledge with token-conserving Two-Stage Search → Fetch retrieval.
+- 📚 **Wikipedia Hybrid Search:** SOTA BM25 (FTS5) + Dense Vector (USearch HNSW) with Reciprocal Rank Fusion (RRF). Structural sections via `mwparserfromhell` (no naive chunking). FTS5 always available (zero embeddings). USearch built via CLI after ingestion. Embeddings: FastEmbed `all-MiniLM-L6-v2` (384-dim). Ingestion: `tools/import_wikipedia_dump.py` (streaming, checkpoint/resume). Live API fallback via `nagato_wikipedia_api_search`.
 - 🧪 **Testing & Quality:** Targeted pytest execution (`nagato_run_test`), configured test suites, and integrated Ruff linting/syntax checks.
 - 🧰 **Git & Shell:** Git log/diff/status/revert, shell execution, DuckDuckGo web search, and interactive prompts.
 - 🧠 **Smart Pre-Parsing:** Automatic input validation and auto-correction before tool execution — catches malformed arguments early.
@@ -256,7 +256,7 @@ The instructions guide the LLM to:
 | **Lint & Quality** | `nagato_lint` | Syntax checking and automated Ruff linting. |
 | **Testing** | `nagato_run_test`<br>`nagato_run_gold_full`<br>`nagato_run_configured_suite` | Run single pytest test nodes or configured test suites. |
 | **Git** | `nagato_git`<br>`nagato_upload` | Git operations (diff, log, status, revert, checkout) and guarded uploads. |
-| **Wikipedia** | `nagato_wikipedia_search`<br>`nagato_wikipedia_fetch`<br>`nagato_wikipedia_api_search`<br>`nagato_wikipedia_init`<br>`nagato_wikipedia_status` | Local vector similarity search and live API search over Wikipedia. Employs a Two-Stage Search → Fetch pattern (search returns snippet previews; fetch retrieves full text/sections) using `sqlite-vec` and `jina-embeddings-v2-base-en`. |
+| **Wikipedia** | `nagato_wikipedia_search`<br>`nagato_wikipedia_fetch`<br>`nagato_wikipedia_api_search`<br>`nagato_wikipedia_init`<br>`nagato_wikipedia_status`<br>`nagato_build_usearch_index` | SOTA Hybrid Search (BM25 + Dense Vector) with Reciprocal Rank Fusion (RRF). **Structural sections** (no naive chunking) via `mwparserfromhell`. **FTS5 BM25** always available (zero embeddings). **USearch HNSW** for dense ANN (Cosine, 384-dim). RRF: `1/(60+rank_bm25) + 1/(60+rank_dense)`. Graceful fallback to pure BM25 if USearch missing. Embeddings: FastEmbed `all-MiniLM-L6-v2` (384-dim). Ingestion: `tools/import_wikipedia_dump.py` (streaming, checkpoint/resume). |
 | **Shell** | `nagato_shell`<br>`nagato_shell_str` | Shell command execution (string and structured output). |
 | **Web** | `nagato_web_search` | DuckDuckGo web search. |
 | **System** | `nagato_is_agent_running` | Agent monitoring. |
@@ -394,14 +394,13 @@ Standalone tool behaviors (Semantic Search, Ruff Linting, and Output Truncation)
     "auto_index": true
   },
   "wikipedia": {
-    "db_path": "~/.nagato/wikipedia/vec.db",
-    "embedding_model": "jinaai/jina-embeddings-v2-base-en",
-    "dimension": 768,
+    "db_path": "~/.nagato/wikipedia/hybrid.db",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "dimension": 384,
     "auto_index": false,
-    "chunk_size": 1500,
-    "chunk_overlap": 150,
-    "batch_size": 256,
-    "device": "auto"
+    "batch_size": 2000,
+    "device": "auto",
+    "min_section_chars": 150
   },
   "lint": {
     "enabled": true,
@@ -481,17 +480,16 @@ Here's a full `.nagato/functions_config.json` showing all available options:
     "embedding_model": "jina",
     "dimension": 768,
     "auto_index": true,
-    "docstring_only": false
+    "docstring_only": true
   },
   "wikipedia": {
-    "db_path": "~/.nagato/wikipedia/vec.db",
-    "embedding_model": "jinaai/jina-embeddings-v2-base-en",
-    "dimension": 768,
+    "db_path": "~/.nagato/wikipedia/hybrid.db",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "dimension": 384,
     "auto_index": false,
-    "chunk_size": 1500,
-    "chunk_overlap": 150,
-    "batch_size": 256,
-    "device": "auto"
+    "batch_size": 2000,
+    "device": "auto",
+    "min_section_chars": 150
   },
   "lint": {
     "enabled": true,
@@ -515,7 +513,7 @@ Here's a full `.nagato/functions_config.json` showing all available options:
 - **`tool_filtering`** — Controls which tools are available (see [Tool Filtering](#-tool-filtering))
 - **`insight`** — Enables the knowledge graph (requires `[semantic]` extra)
 - **`semantic_search`** — Vector search configuration for local codebase symbols and chunks
-- **`wikipedia`** — Vector similarity and API search configuration for Wikipedia encyclopedic dumps
+- **`wikipedia`** — SOTA Hybrid Search (BM25 + Dense Vector) configuration for Wikipedia
 - **`lint`** — Ruff linting behavior
 - **`tool_token_limits`** — Output truncation per category (0 = unlimited)
 - **`redundant_read_detection`** — Warns when reading the same unchanged file multiple times (`enabled`: toggle feature, `warn_only`: only prepend warning, never block)

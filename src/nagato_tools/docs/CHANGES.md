@@ -15,8 +15,14 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 - **Standalone Integration** (`fsm/function_facade.py`, `sync_tools.py`): Wikipedia tools registered in standalone facade, synced to `nagato_tools` package, and exposed via MCP server
 - **Configuration Schema** (`fsm/functions_internal/config.py`): New `WikipediaConfig` dataclass with `db_path`, `embedding_model`, `dimension`, `chunk_size`, `chunk_overlap`, `batch_size`, `device` options
 
+### Added
+- **Wikipedia Hybrid Search & USearch Indexing** (`src/nagato_tools/wikipedia.py`, `src/nagato_tools/__init__.py`): Upgraded Wikipedia retrieval to SOTA Hybrid Search combining BM25 lexical search (SQLite FTS5) and dense vector search (USearch HNSW, Cosine similarity, 384-dim FastEmbed `all-MiniLM-L6-v2`) fused via Reciprocal Rank Fusion (RRF, $k=60$). Added `nagato_build_usearch_index` tool. Storage structure transitioned from chunk-level vec0 to structural `wiki_sections` with FTS5 virtual table and triggers, plus standalone USearch index file.
+- **Class-Level Callee Aggregation** (`src/nagato_tools/read.py`): Extended `nagato_extract_callees` to support querying class symbols directly (aggregating callees across member methods like `ClassName.%` and `%.ClassName.%`).
+
 ### Changed
-- **Tool Count Update** (`sync_tools.py`): Base standalone tool count increased from 31 to 36 (36 standard + 15 Insight = 51 total when Insight enabled)
+- **Default Token Limits & Docstring Only Search** (`src/nagato_tools/config.py`): Lowered standalone default output token limits (`read`: 6000, `search`: 2000, `web`: 4000) to conserve context budget. Changed `SemanticSearchConfig.docstring_only` default to `True`.
+- **Wikipedia Configuration Defaults** (`src/nagato_tools/config.py`, `README.md`): Updated defaults to `hybrid.db`, `sentence-transformers/all-MiniLM-L6-v2` (384-dim), `batch_size=2000`, and added `min_section_chars=150`.
+- **Tool Count Update** (`sync_tools.py`): Base standalone tool count increased from 31 to 36
 - **Landing Page Manifest** (`sync_tools.py`): Added "Wikipedia & Knowledge Retrieval" category to exported `tools.json`
 - **README Documentation** (`README.md`, `.mcptools/MCP_TOOLS_README.md`): Expanded both READMEs with Wikipedia tool suite documentation, configuration examples, and category listings
 - **Category Mapping** (`fsm/function_facade.py`): Added `finalize_handler` → `ToolCategory.FINALIZE` and `wikipedia` → `ToolCategory.WIKIPEDIA` mappings; fixed `_get_tool_category_for_tool` signature

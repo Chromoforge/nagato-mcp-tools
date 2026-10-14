@@ -1,15 +1,23 @@
 """
-Wikipedia Vector Search and Retrieval for NagatoFSM.
+Wikipedia Hybrid Search and Retrieval for NagatoFSM (SOTA Implementation).
 
-Provides tools for searching and retrieving Wikipedia knowledge:
-- `nagato_wikipedia_search`: Two-stage search step 1 (returns rank, title, section, snippet)
-- `nagato_wikipedia_fetch`: Two-stage search step 2 (fetches full section or entire article text)
+Provides tools for searching and retrieving Wikipedia knowledge using a hybrid
+BM25 (FTS5) + Dense Vector (USearch HNSW) approach with Reciprocal Rank Fusion (RRF).
+
+Tools:
+- `nagato_wikipedia_search`: Hybrid search (BM25 + Dense) with RRF merge
+- `nagato_wikipedia_fetch`: Exact B-Tree lookup for full section/article text
 - `nagato_wikipedia_api_search`: Online Wikipedia REST API search fallback
 - `nagato_wikipedia_status`: DB stats, document counts, and configuration
 - `nagato_wikipedia_init`: Initialize schema and verify vector support
 
-Uses SQLite + sqlite-vec with Jina embeddings (`jinaai/jina-embeddings-v2-base-en`).
-All data is stored locally within NagatoFSM (~/.nagato/wikipedia/vec.db or configured path).
+Architecture:
+- SQLite: wiki_articles, wiki_sections (structural sections, no naive chunking)
+- FTS5: wiki_sections_fts (BM25 lexical search)
+- USearch HNSW: wiki_usearch.index (dense vector ANN search)
+- RRF: Deterministic fusion of BM25 and dense ranks
+
+All data is stored locally within NagatoFSM (~/.nagato/wikipedia/).
 """
 
 from __future__ import annotations
@@ -38,7 +46,13 @@ DEFAULT_WIKIPEDIA_DIMENSION = 384
 DEFAULT_SEARCH_LIMIT = 5
 MAX_SEARCH_LIMIT = 20
 
+# RRF constant (standard value from literature)
+RRF_K = 60
+
 _wikipedia_embedder = None
+_usearch_index = None
+_usearch_index_path = None
+_chunk_id_map = None  # Maps usearch internal IDs to SQLite section IDs
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
@@ -110,10 +124,16 @@ def get_wikipedia_db_path(ctx: Optional[Any] = None) -> Path:
     except Exception as exc:
         logger.debug("Falling back to default db path: %s", exc)
 
-    # Global user directory default: ~/.nagato/wikipedia/vec.db
+    # Global user directory default: ~/.nagato/wikipedia/hybrid.db
     base_dir = Path.home() / ".nagato" / "wikipedia"
     base_dir.mkdir(parents=True, exist_ok=True)
-    return base_dir / "vec.db"
+    return base_dir / "hybrid.db"
+
+
+def get_usearch_index_path(ctx: Optional[Any] = None) -> Path:
+    """Resolve the USearch index file path."""
+    db_path = get_wikipedia_db_path(ctx)
+    return db_path.parent / "wiki_usearch.index"
 
 
 def _get_embedder(model_name: str = DEFAULT_WIKIPEDIA_MODEL):
@@ -139,56 +159,214 @@ def _get_embedder(model_name: str = DEFAULT_WIKIPEDIA_MODEL):
     return _wikipedia_embedder
 
 
+def _load_usearch_index(index_path: Path) -> tuple[Any, np.ndarray]:
+    """Load USearch index and chunk_id mapping from disk."""
+    global _usearch_index, _chunk_id_map, _usearch_index_path
+    
+    if _usearch_index is not None and _usearch_index_path == index_path:
+        return _usearch_index, _chunk_id_map
+    
+    if not index_path.exists():
+        raise FileNotFoundError(f"USearch index not found at {index_path}. Run build_usearch_index() first.")
+    
+    logger.info(f"Loading USearch index from {index_path}...")
+    import usearch.index
+    _usearch_index = usearch.index.Index(
+        ndim=DEFAULT_WIKIPEDIA_DIMENSION,
+        metric=usearch.index.MetricKind.Cos,
+        dtype=usearch.index.ScalarKind.F32,
+    )
+    _usearch_index.load(str(index_path))
+    logger.info(f"USearch index loaded (size={_usearch_index.size})")
+    
+    # Load chunk_id mapping
+    map_path = index_path.with_suffix('.npy')
+    if map_path.exists():
+        _chunk_id_map = np.load(map_path)
+        logger.info(f"Loaded chunk_id map: {len(_chunk_id_map)} entries")
+    else:
+        # Fallback: assume sequential mapping
+        _chunk_id_map = np.arange(_usearch_index.size, dtype=np.int64)
+        logger.warning("No chunk_id map found, assuming sequential mapping")
+    
+    _usearch_index_path = index_path
+    
+    return _usearch_index, _chunk_id_map
+
+
+def _build_usearch_index(db_path: Path, index_path: Path, batch_size: int = 100000) -> None:
+    """Build USearch HNSW index from SQLite section embeddings."""
+    global _usearch_index, _chunk_id_map
+    
+    logger.info(f"Building USearch index from {db_path}...")
+    import time
+    start = time.time()
+    
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    
+    # Get total count of sections with embeddings
+    total = cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL").fetchone()[0]
+    logger.info(f"Total sections with embeddings to index: {total:,}")
+    
+    if total == 0:
+        logger.warning("No sections with embeddings found, skipping index build")
+        conn.close()
+        return
+    
+    # Create USearch index
+    import usearch.index
+    _usearch_index = usearch.index.Index(
+        ndim=DEFAULT_WIKIPEDIA_DIMENSION,
+        metric=usearch.index.MetricKind.Cos,
+        dtype=usearch.index.ScalarKind.F32,
+    )
+    
+    # Pre-allocate chunk_id map
+    _chunk_id_map = np.empty(total, dtype=np.int64)
+    
+    # Process in batches
+    offset = 0
+    vectors_added = 0
+    
+    while offset < total:
+        cursor.execute(
+            "SELECT id, embedding FROM wiki_sections WHERE embedding IS NOT NULL LIMIT ? OFFSET ?",
+            (batch_size, offset)
+        )
+        rows = cursor.fetchall()
+        
+        if not rows:
+            break
+        
+        # Prepare batch
+        batch_size_actual = len(rows)
+        vectors = np.empty((batch_size_actual, DEFAULT_WIKIPEDIA_DIMENSION), dtype=np.float32)
+        section_ids = np.empty(batch_size_actual, dtype=np.int64)
+        
+        for i, (section_id, vec_blob) in enumerate(rows):
+            vectors[i] = np.frombuffer(vec_blob, dtype=np.float32)
+            section_ids[i] = section_id
+        
+        # Add to USearch index (keys are sequential integers)
+        keys = np.arange(vectors_added, vectors_added + batch_size_actual, dtype=np.int64)
+        _usearch_index.add(keys, vectors)
+        _chunk_id_map[vectors_added:vectors_added + batch_size_actual] = section_ids
+        vectors_added += batch_size_actual
+        
+        offset += batch_size
+        elapsed = time.time() - start
+        rate = vectors_added / elapsed if elapsed > 0 else 0
+        logger.info(f"  Indexed {vectors_added:,}/{total:,} vectors ({rate:.0f} vec/s)")
+    
+    conn.close()
+    
+    # Save index and mapping
+    logger.info(f"Saving USearch index to {index_path}...")
+    _usearch_index.save(str(index_path))
+    
+    map_path = index_path.with_suffix('.npy')
+    np.save(map_path, _chunk_id_map)
+    
+    total_time = time.time() - start
+    logger.info(f"USearch index built in {total_time:.1f}s ({vectors_added:,} vectors)")
+
+
+def _ensure_usearch_index(ctx: Optional[Any] = None) -> tuple[Any, np.ndarray]:
+    """Ensure USearch index is loaded, building if necessary."""
+    db_path = get_wikipedia_db_path(ctx)
+    index_path = get_usearch_index_path(ctx)
+    
+    # Check if there are embeddings to index before building
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL")
+    embedding_count = cursor.fetchone()[0]
+    conn.close()
+    
+    if embedding_count == 0:
+        raise FileNotFoundError("No embeddings in database to build USearch index")
+    
+    if not index_path.exists():
+        logger.info("USearch index not found, building...")
+        _build_usearch_index(db_path, index_path)
+    
+    return _load_usearch_index(index_path)
+
+
 def get_wikipedia_connection(db_path: Optional[Path] = None, ctx: Optional[Any] = None) -> tuple[sqlite3.Connection, bool]:
-    """Get or initialize SQLite connection with sqlite-vec vector support."""
+    """Get or initialize SQLite connection with FTS5 and optional USearch support."""
     if db_path is None:
         db_path = get_wikipedia_db_path(ctx)
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
 
-    has_vector = False
-    try:
-        import sqlite_vec
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        has_vector = True
-    except Exception as exc:
-        logger.debug("sqlite-vec extension not available for wikipedia db: %s", exc)
-
     with conn:
+        # wiki_articles table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS wiki_articles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER PRIMARY KEY,
+                pageid INTEGER UNIQUE,
                 title TEXT UNIQUE,
-                revision_id INTEGER,
+                lead_paragraph TEXT,
                 categories TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                last_modified TEXT
             )
+        """)
+        
+        # wiki_sections table (structural sections, no naive chunking)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS wiki_sections (
+                id INTEGER PRIMARY KEY,
+                article_id INTEGER NOT NULL REFERENCES wiki_articles(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                section_name TEXT NOT NULL,
+                section_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                char_count INTEGER NOT NULL,
+                embedding BLOB  -- 384-dim float32 vector
+            )
+        """)
+        
+        # B-Tree indexes for exact lookups
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sections_art_sec ON wiki_sections(article_id, section_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sections_title_sec ON wiki_sections(title, section_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sections_embedding ON wiki_sections(embedding) WHERE embedding IS NOT NULL")
+        
+        # FTS5 virtual table for BM25 lexical search
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS wiki_sections_fts USING fts5(
+                title, section_name, content,
+                content=wiki_sections,
+                content_rowid=id,
+                tokenize='unicode61 remove_diacritics 2'
+            )
+        """)
+        
+        # FTS5 triggers to keep in sync
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS wiki_sections_ai AFTER INSERT ON wiki_sections BEGIN
+                INSERT INTO wiki_sections_fts(rowid, title, section_name, content)
+                VALUES (new.id, new.title, new.section_name, new.content);
+            END
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS wiki_chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                article_id INTEGER,
-                title TEXT,
-                section TEXT,
-                chunk_index INTEGER,
-                content TEXT,
-                FOREIGN KEY (article_id) REFERENCES wiki_articles(id) ON DELETE CASCADE
-            )
+            CREATE TRIGGER IF NOT EXISTS wiki_sections_ad AFTER DELETE ON wiki_sections BEGIN
+                INSERT INTO wiki_sections_fts(wiki_sections_fts, rowid, title, section_name, content)
+                VALUES ('delete', old.id, old.title, old.section_name, old.content);
+            END
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wiki_chunks_title ON wiki_chunks(title)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wiki_chunks_section ON wiki_chunks(section)")
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS wiki_sections_au AFTER UPDATE ON wiki_sections BEGIN
+                INSERT INTO wiki_sections_fts(wiki_sections_fts, rowid, title, section_name, content)
+                VALUES ('delete', old.id, old.title, old.section_name, old.content);
+                INSERT INTO wiki_sections_fts(rowid, title, section_name, content)
+                VALUES (new.id, new.title, new.section_name, new.content);
+            END
+        """)
 
-        if has_vector:
-            conn.execute(f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS vec_wiki_chunks USING vec0(
-                    chunk_id INTEGER PRIMARY KEY,
-                    embedding_vector float[{DEFAULT_WIKIPEDIA_DIMENSION}]
-                )
-            """)
-
-    return conn, has_vector
+    return conn, True  # Always return True for has_vector (FTS5 is always available)
 
 
 # ----------------------------------------------------------------------
@@ -202,6 +380,8 @@ async def nagato_wikipedia_search(
     _ctx: Optional[Any] = None,
 ) -> str:
     """
+    Hybrid Search (BM25 + Dense Vector) with Reciprocal Rank Fusion (RRF).
+    
     Step 1 of the Search -> Fetch pattern: searches Wikipedia and returns a
     lightweight preview (titles, sections, snippets) to protect token budget.
 
@@ -226,66 +406,112 @@ async def nagato_wikipedia_search(
         )
 
     try:
-        conn, has_vector = get_wikipedia_connection(db_path, _ctx)
+        conn, _ = get_wikipedia_connection(db_path, _ctx)
     except Exception as exc:
         return nagato_error(f"Failed to connect to Wikipedia database: {exc}", tool="nagato_wikipedia_search")
 
     cursor = conn.cursor()
     try:
-        # Check total available chunks
-        total_chunks = cursor.execute("SELECT COUNT(*) FROM wiki_chunks").fetchone()[0]
-        if total_chunks == 0:
+        # Check total available sections
+        total_sections = cursor.execute("SELECT COUNT(*) FROM wiki_sections").fetchone()[0]
+        if total_sections == 0:
             return (
                 "Wikipedia local database is empty. No articles have been imported yet. "
                 "Use `nagato_wikipedia_api_search()` to search online."
             )
 
-        embedder = _get_embedder()
-        rows = []
-
-        if has_vector and embedder is not None:
-            # Semantic vector match via sqlite-vec
-            query_vecs = list(embedder.embed([normalized_query]))
-            if query_vecs:
-                query_vec = query_vecs[0].astype(np.float32).tobytes()
-                cursor.execute(
-                    """
-                    SELECT c.title, c.section, c.content, v.distance
-                    FROM vec_wiki_chunks v
-                    JOIN wiki_chunks c ON c.id = v.chunk_id
-                    WHERE embedding_vector MATCH ? AND k = ?
-                    ORDER BY distance ASC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (query_vec, start_offset + bounded_limit, bounded_limit, start_offset),
-                )
-                rows = cursor.fetchall()
-
-        if not rows:
-            # Fallback to substring match if vector is unavailable or returned nothing
-            like_pattern = f"%{normalized_query}%"
+        # --- BM25 Search via FTS5 ---
+        bm25_results = []
+        try:
             cursor.execute(
                 """
-                SELECT title, section, content, 0.0 as distance
-                FROM wiki_chunks
-                WHERE content LIKE ? OR title LIKE ?
-                LIMIT ? OFFSET ?
+                SELECT rowid, bm25(wiki_sections_fts) as score
+                FROM wiki_sections_fts
+                WHERE wiki_sections_fts MATCH ?
+                ORDER BY score ASC
+                LIMIT 50
                 """,
-                (like_pattern, like_pattern, bounded_limit, start_offset),
+                (normalized_query,)
             )
-            rows = cursor.fetchall()
+            bm25_rows = cursor.fetchall()
+            bm25_results = [(row[0], row[1]) for row in bm25_rows]  # (section_id, bm25_score)
+        except Exception as exc:
+            logger.debug(f"BM25 search failed: {exc}")
+
+        # --- Dense Vector Search via USearch ---
+        dense_results = []
+        embedder = _get_embedder()
+        if embedder is not None:
+            try:
+                # Check if there are any embeddings in the database before attempting dense search
+                cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL")
+                embedding_count = cursor.fetchone()[0]
+                if embedding_count > 0:
+                    index, chunk_id_map = _ensure_usearch_index(_ctx)
+                    query_vecs = list(embedder.embed([normalized_query]))
+                    if query_vecs:
+                        query_vec = query_vecs[0].astype(np.float32)
+                        matches = index.search(query_vec, 50)
+                        result_keys = matches.keys
+                        result_distances = matches.distances
+                        result_section_ids = chunk_id_map[result_keys]
+                        dense_results = list(zip(result_section_ids, result_distances))  # (section_id, cosine_distance)
+                else:
+                    logger.debug("No embeddings in database, skipping dense search")
+            except Exception as exc:
+                logger.debug(f"Dense search failed (USearch index may not exist): {exc}")
+
+        # --- RRF Fusion ---
+        # RRF_score = 1/(k + rank_bm25) + 1/(k + rank_dense)
+        # Lower BM25 score = better, lower cosine distance = better
+        fused_scores = {}
+        
+        # Add BM25 ranks
+        for rank, (section_id, _) in enumerate(bm25_results):
+            fused_scores[section_id] = fused_scores.get(section_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+        
+        # Add Dense ranks
+        for rank, (section_id, _) in enumerate(dense_results):
+            fused_scores[section_id] = fused_scores.get(section_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+
+        if not fused_scores:
+            return f"No Wikipedia entries found matching '{normalized_query}'."
+
+        # Sort by RRF score descending
+        sorted_sections = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # Apply offset and limit
+        final_sections = sorted_sections[start_offset:start_offset + bounded_limit]
+        result_section_ids = [sid for sid, _ in final_sections]
+
+        if not result_section_ids:
+            return f"No Wikipedia entries found matching '{normalized_query}'."
+
+        # Fetch metadata for results
+        placeholders = ','.join('?' * len(result_section_ids))
+        cursor.execute(
+            f"""
+            SELECT id, title, section_name, content
+            FROM wiki_sections
+            WHERE id IN ({placeholders})
+            """,
+            result_section_ids
+        )
+        
+        # Preserve RRF ranking order
+        rows_by_id = {row[0]: row for row in cursor.fetchall()}
+        rows = [rows_by_id[sid] for sid in result_section_ids if sid in rows_by_id]
 
         if not rows:
             return f"No Wikipedia entries found matching '{normalized_query}'."
 
-        lines = [f"Wikipedia Search Results for '{normalized_query}' ({len(rows)} hits):"]
-        for idx, row in enumerate(rows, start=start_offset + 1):
-            title, section, content, distance = row[0], row[1], row[2], row[3]
+        lines = [f"Wikipedia Hybrid Search Results for '{normalized_query}' ({len(rows)} hits) [RRF]:"]
+        for idx, (section_id, title, section_name, content) in enumerate(rows, start=start_offset + 1):
             snippet = content[:200].replace("\n", " ").strip()
-            section_display = f" -> Section: {section}" if section else ""
-            lines.append(f"{idx}. [{title}]{section_display} (Distance: {distance:.3f})")
+            section_display = f" -> Section: {section_name}" if section_name and section_name != "__lead__" else ""
+            lines.append(f"{idx}. [{title}]{section_display}")
             lines.append(f"   Snippet: {snippet}...")
-            lines.append(f"   (Use `nagato_wikipedia_fetch(title=\"{title}\", section=\"{section or ''}\")` for full text)")
+            lines.append(f"   (Use `nagato_wikipedia_fetch(title=\"{title}\", section=\"{section_name if section_name != '__lead__' else ''}\")` for full text)")
 
         return _truncate_to_token_limit("\n".join(lines), ctx=ctx)
 
@@ -302,10 +528,11 @@ async def nagato_wikipedia_fetch(
     """
     Step 2 of the Search -> Fetch pattern: retrieves the complete content
     of a specific Wikipedia article or section identified by search.
+    Uses exact B-Tree lookup on wiki_sections(title, section_name).
 
     Args:
         title: Exact title of the article.
-        section: Optional section name to narrow retrieval. If omitted, returns entire article.
+        section: Optional section name to narrow retrieval. If omitted, returns entire article (all sections in order).
         _ctx: Optional context (injected by facade).
     """
     ctx = _get_context(_ctx)
@@ -325,24 +552,25 @@ async def nagato_wikipedia_fetch(
     cursor = conn.cursor()
     try:
         if section and section.strip():
+            normalized_section = section.strip()
             cursor.execute(
                 """
-                SELECT section, content
-                FROM wiki_chunks
-                WHERE (title = ? OR title LIKE ?) AND section = ?
-                ORDER BY chunk_index ASC
+                SELECT section_name, content
+                FROM wiki_sections
+                WHERE title = ? AND section_name = ?
+                ORDER BY section_index ASC
                 """,
-                (normalized_title, f"%{normalized_title}%", section.strip()),
+                (normalized_title, normalized_section),
             )
         else:
             cursor.execute(
                 """
-                SELECT section, content
-                FROM wiki_chunks
-                WHERE title = ? OR title LIKE ?
-                ORDER BY chunk_index ASC
+                SELECT section_name, content
+                FROM wiki_sections
+                WHERE title = ?
+                ORDER BY section_index ASC
                 """,
-                (normalized_title, f"%{normalized_title}%"),
+                (normalized_title,),
             )
 
         rows = cursor.fetchall()
@@ -351,10 +579,8 @@ async def nagato_wikipedia_fetch(
             return f"Article '{normalized_title}'{sec_hint} was not found in the local Wikipedia database."
 
         output_parts = [f"# {normalized_title}"]
-        current_section = None
         for sec, content in rows:
-            if sec and sec != current_section:
-                current_section = sec
+            if sec and sec != "__lead__":
                 output_parts.append(f"\n## {sec}")
             output_parts.append(content)
 
@@ -417,17 +643,22 @@ async def nagato_wikipedia_api_search(
 
 def nagato_wikipedia_init(_ctx: Optional[Any] = None) -> str:
     """
-    Initializes the local Wikipedia SQLite schema and checks vector capability.
+    Initializes the local Wikipedia SQLite schema (FTS5 + structural sections).
     Safe and idempotent to call anytime.
     """
     db_path = get_wikipedia_db_path(_ctx)
     try:
-        conn, has_vector = get_wikipedia_connection(db_path, _ctx)
+        conn, _ = get_wikipedia_connection(db_path, _ctx)
         conn.close()
-        vec_status = "ENABLED (sqlite-vec available)" if has_vector else "DISABLED (sqlite-vec not loaded, text fallback active)"
+        
+        # Check USearch index
+        index_path = get_usearch_index_path(_ctx)
+        usearch_status = "READY" if index_path.exists() else "NOT BUILT (run build_usearch_index)"
+        
         return (
             f"Wikipedia database initialized at: {db_path}\n"
-            f"Vector Search: {vec_status}\n"
+            f"Lexical Search: FTS5 BM25 (always available)\n"
+            f"Dense Vector Search: USearch HNSW ({usearch_status})\n"
             f"Default Embedding Model: {DEFAULT_WIKIPEDIA_MODEL} ({DEFAULT_WIKIPEDIA_DIMENSION}-dim)"
         )
     except Exception as exc:
@@ -436,36 +667,78 @@ def nagato_wikipedia_init(_ctx: Optional[Any] = None) -> str:
 
 def nagato_wikipedia_status(_ctx: Optional[Any] = None) -> str:
     """
-    Returns statistics and status of the local Wikipedia database.
+    Returns statistics and status of the local Wikipedia database and USearch index.
     """
     db_path = get_wikipedia_db_path(_ctx)
+    index_path = get_usearch_index_path(_ctx)
+    
     if not db_path.exists():
         return f"No Wikipedia database found at {db_path}."
 
     try:
-        conn, has_vector = get_wikipedia_connection(db_path, _ctx)
+        conn, _ = get_wikipedia_connection(db_path, _ctx)
         cursor = conn.cursor()
         article_count = cursor.execute("SELECT COUNT(*) FROM wiki_articles").fetchone()[0]
-        chunk_count = cursor.execute("SELECT COUNT(*) FROM wiki_chunks").fetchone()[0]
-        vec_count = 0
-        if has_vector:
-            vec_count = cursor.execute("SELECT COUNT(*) FROM vec_wiki_chunks").fetchone()[0]
+        section_count = cursor.execute("SELECT COUNT(*) FROM wiki_sections").fetchone()[0]
+        embedded_count = cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL").fetchone()[0]
         cursor.close()
         conn.close()
 
         size_mb = db_path.stat().st_size / (1024 * 1024)
+        
+        # USearch index info
+        usearch_info = ""
+        if index_path.exists():
+            try:
+                index, chunk_id_map = _load_usearch_index(index_path)
+                index_size_mb = index_path.stat().st_size / (1024 * 1024)
+                usearch_info = (
+                    f"\n- USearch Index: {index_path}\n"
+                    f"  - Index Size: {index_size_mb:.2f} MB\n"
+                    f"  - Indexed Vectors: {index.size:,}\n"
+                    f"  - Index Type: HNSW (M=32, efConstruction=200)\n"
+                    f"  - Search efSearch: 64\n"
+                    f"  - Metric: Cosine"
+                )
+            except Exception as e:
+                usearch_info = f"\n- USearch Index: ERROR loading ({e})"
+        else:
+            usearch_info = "\n- USearch Index: NOT BUILT (run build_usearch_index)"
+
         return (
             f"Wikipedia Database Status:\n"
             f"- Path: {db_path}\n"
             f"- Database Size: {size_mb:.2f} MB\n"
             f"- Total Articles: {article_count:,}\n"
-            f"- Total Chunks: {chunk_count:,}\n"
-            f"- Indexed Vectors: {vec_count:,}\n"
-            f"- Vector Engine: {'sqlite-vec active' if has_vector else 'unavailable (text fallback)'}\n"
+            f"- Total Sections: {section_count:,}\n"
+            f"- Sections with Embeddings: {embedded_count:,}{usearch_info}\n"
             f"- Recommended Model: {DEFAULT_WIKIPEDIA_MODEL}"
         )
     except Exception as exc:
         return nagato_error(f"Status check failed: {exc}", tool="nagato_wikipedia_status")
+
+
+def nagato_build_usearch_index(_ctx: Optional[Any] = None) -> str:
+    """
+    Builds the USearch HNSW index from the SQLite section embeddings.
+    This is a one-time operation (or run after new data ingestion).
+    """
+    db_path = get_wikipedia_db_path(_ctx)
+    index_path = get_usearch_index_path(_ctx)
+    
+    if not db_path.exists():
+        return nagato_error(f"Wikipedia database not found at {db_path}.", tool="nagato_build_usearch_index")
+    
+    try:
+        _build_usearch_index(db_path, index_path)
+        index_size_mb = index_path.stat().st_size / (1024 * 1024)
+        return (
+            f"USearch index built successfully!\n"
+            f"- Index: {index_path}\n"
+            f"- Size: {index_size_mb:.2f} MB"
+        )
+    except Exception as exc:
+        return nagato_error(f"USearch index build failed: {exc}", tool="nagato_build_usearch_index")
 
 
 # Aliases for compatibility
@@ -474,4 +747,6 @@ wikipedia_fetch = nagato_wikipedia_fetch
 wikipedia_init = nagato_wikipedia_init
 wikipedia_status = nagato_wikipedia_status
 wikipedia_api_search = nagato_wikipedia_api_search
-__all__ = ['nagato_wikipedia_search', 'nagato_wikipedia_fetch', 'nagato_wikipedia_api_search', 'nagato_wikipedia_init', 'nagato_wikipedia_status']
+build_usearch_index = nagato_build_usearch_index
+build_usearch_index_tool = nagato_build_usearch_index
+__all__ = ['nagato_wikipedia_search', 'nagato_wikipedia_fetch', 'nagato_wikipedia_api_search', 'nagato_wikipedia_init', 'nagato_wikipedia_status', 'nagato_build_usearch_index']

@@ -518,6 +518,8 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
     Returns a list of all functions/methods called by the target symbol.
     If no file_path is provided, the relational global call table is queried.
     Results are paged via limit/start_offset to avoid flooding the context.
+    Supports class-level aggregation: if symbol is a class name, aggregates
+    callees across all member methods (e.g., MyClass.__init__, MyClass.my_method).
     Args:
         symbol: The symbol name to find callees for.
         file_path: Optional. Relative path to a specific file for local scope.
@@ -532,14 +534,16 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
         cursor = conn.cursor()
         
         if file_path:
+            # For scoped queries, match exact symbol, class methods (ClassName.%), and qualified methods (%.ClassName.%)
             cursor.execute(
-                "SELECT callee FROM global_calls WHERE file_path = ? AND caller = ?",
-                (file_path, symbol)
+                "SELECT callee FROM global_calls WHERE file_path = ? AND (caller = ? OR caller LIKE ? OR caller LIKE ?)",
+                (file_path, symbol, f"{symbol}.%", f"%.{symbol}.%")
             )
         else:
+            # For global queries, match exact symbol, class methods (ClassName.%), and qualified methods (%.ClassName.%)
             cursor.execute(
-                "SELECT DISTINCT callee, file_path FROM global_calls WHERE caller = ? OR caller LIKE ?",
-                (symbol, f"%.{symbol}")
+                "SELECT DISTINCT callee, file_path FROM global_calls WHERE caller = ? OR caller LIKE ? OR caller LIKE ?",
+                (symbol, f"{symbol}.%", f"%.{symbol}.%")
             )
             
         rows = cursor.fetchall()
@@ -553,7 +557,42 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
         if not paged_rows:
             return _append_paging_suffix(f"[CALLEES FOR: {symbol}]", total_rows, start_offset, 0)
 
-        output = [_append_paging_suffix(f"[CALLEES FOR: {symbol}]", total_rows, start_offset, len(paged_rows))]
+        # Check if results came from class member aggregation
+        # We need to check the caller column (index 0 for file_path queries, index 1 for global queries)
+        # Actually, the query returns (callee,) for file_path and (callee, file_path) for global
+        # We need to re-query to check callers, or we can infer from the fact that we used LIKE patterns
+        # For simplicity, check if any caller in the original query would have matched the pattern
+        # Since we used LIKE patterns, if we got results and the symbol itself has no direct calls,
+        # it must be from member aggregation
+        has_member_aggregation = False
+        # Re-check by querying callers directly
+        conn2 = sqlite3.connect(_get_db_path(_ctx))
+        cursor2 = conn2.cursor()
+        if file_path:
+            cursor2.execute(
+                "SELECT caller FROM global_calls WHERE file_path = ? AND (caller = ? OR caller LIKE ? OR caller LIKE ?)",
+                (file_path, symbol, f"{symbol}.%", f"%.{symbol}.%")
+            )
+        else:
+            cursor2.execute(
+                "SELECT DISTINCT caller FROM global_calls WHERE caller = ? OR caller LIKE ? OR caller LIKE ?",
+                (symbol, f"{symbol}.%", f"%.{symbol}.%")
+            )
+        caller_rows = cursor2.fetchall()
+        conn2.close()
+        
+        # Check if any caller is a member method (not the exact symbol)
+        for caller_row in caller_rows:
+            caller = caller_row[0]
+            if caller != symbol and (caller.startswith(f"{symbol}.") or f".{symbol}." in caller):
+                has_member_aggregation = True
+                break
+        
+        header = f"[CALLEES FOR: {symbol}]"
+        if has_member_aggregation:
+            header += " (aggregated across member methods)"
+        
+        output = [_append_paging_suffix(header, total_rows, start_offset, len(paged_rows))]
         if file_path:
             for r in paged_rows:
                 output.append(f"  -> {r[0]}")
@@ -571,16 +610,32 @@ def nagato_extract_callees(symbol: str, file_path: str = None, limit: int = 20, 
                 from extractcallgraph import CallgraphBuilder
                 builder = CallgraphBuilder(file_path)
                 graph = builder.build()
+                
+                # Check for exact match first
                 callees = graph["calls"].get(symbol, [])
+                
+                # If no direct match, try class member aggregation
+                if not callees:
+                    member_callees = []
+                    for caller, callee_list in graph["calls"].items():
+                        if caller == symbol or caller.startswith(f"{symbol}.") or f".{symbol}." in caller:
+                            member_callees.extend(callee_list)
+                    callees = member_callees
+                
                 if not callees:
                     return f"[NAGATO_BOOT INFO] Symbol '{symbol}' does not call anything in {file_path}."
                 normalized_callees = sorted(set(callees))
                 paged_callees, total_rows = _paginate_items(normalized_callees, start_offset, limit)
                 if not paged_callees:
                     return _append_paging_suffix(f"[CALLEES: {symbol}]", total_rows, start_offset, 0)
+                
+                header = f"[CALLEES: {symbol}]"
+                if has_member_aggregation:
+                    header += " (aggregated across member methods)"
+                
                 return _truncate_to_token_limit(
                     "\n".join(
-                        [_append_paging_suffix(f"[CALLEES: {symbol}]", total_rows, start_offset, len(paged_callees))]
+                        [_append_paging_suffix(header, total_rows, start_offset, len(paged_callees))]
                         + [f"  -> {c}" for c in paged_callees]
                     ),
                     ctx=ctx

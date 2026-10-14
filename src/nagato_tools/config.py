@@ -39,7 +39,7 @@ class SemanticSearchConfig:
     auto_index: bool = True
     search_root: str = ""  # Optional override for semantic search base directory
     search_dirs: list[str] = field(default_factory=list)  # Optional whitelist of subdirs to index (relative to search_root)
-    docstring_only: bool = False  # If True, only embed docstrings instead of full function/class bodies
+    docstring_only: bool = True  # If True, only embed docstrings instead of full function/class bodies
 
     def __post_init__(self):
         # Set dimension based on model if not explicitly set
@@ -78,7 +78,11 @@ class FunctionsConfig:
     wikipedia: WikipediaConfig = field(default_factory=WikipediaConfig)
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     insight: dict = field(default_factory=dict)
-    tool_token_limits: dict[str, Any] = field(default_factory=dict)
+    tool_token_limits: dict[str, Any] = field(default_factory=lambda: {
+        "read": 6000,
+        "search": 2000,
+        "web": 4000
+    })
     tool_filtering: dict = field(default_factory=lambda: {
         "denied_tools": ["nagato_shell", "nagato_upload", "nagato_is_agent_running"]
     })  # allowed_tools, denied_tools, allowed_categories
@@ -444,9 +448,9 @@ def get_tool_token_limit(category: str, config_path: Optional[Path] = None) -> O
 
     # Standalone defaults
     defaults = {
-        "read": 20000,
-        "search": 20000,
-        "web": 10000,
+        "read": 6000,
+        "search": 2000,
+        "web": 4000,
         "edit": 20000,
         "shell": 20000,
         "execute": 20000,

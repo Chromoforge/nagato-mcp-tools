@@ -70,6 +70,7 @@ __all__ = [
     "nagato_wikipedia_api_search",
     "nagato_wikipedia_init",
     "nagato_wikipedia_status",
+    "nagato_build_usearch_index",
     "ToolFacade",
     "get_tool_facade",
 ]
