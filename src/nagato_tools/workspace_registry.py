@@ -19,8 +19,12 @@ logger = logging.getLogger(__name__)
 
 
 def get_global_nagato_home() -> Path:
-    """Get the user-global ~/.nagato directory."""
-    nagato_home = Path.home() / ".nagato"
+    """Get the user-global ~/.nagato directory, overridable via NAGATO_GLOBAL_HOME."""
+    env_home = os.environ.get("NAGATO_GLOBAL_HOME")
+    if env_home:
+        nagato_home = Path(env_home).resolve()
+    else:
+        nagato_home = Path.home() / ".nagato"
     nagato_home.mkdir(parents=True, exist_ok=True)
     return nagato_home
 
@@ -104,16 +108,34 @@ def unregister_workspace(workspace_root: Path | str) -> None:
         save_workspaces_registry(data)
 
 
-def list_registered_workspaces() -> List[Dict[str, Any]]:
-    """List all registered workspaces sorted by last_seen descending."""
+def list_registered_workspaces(only_existing: bool = True) -> List[Dict[str, Any]]:
+    """List all registered workspaces sorted by last_seen descending.
+    
+    Args:
+        only_existing: If True (default), filter out workspaces that no longer
+                       exist on disk to keep the registry clean.
+    """
     data = load_workspaces_registry()
     items = []
+    stale_keys = []
+
     for k, item in data.get("workspaces", {}).items():
         p = Path(item.get("path", k))
-        # Keep entry even if temporarily offline, but indicate existence
+        exists = p.exists() and p.is_dir()
+        if not exists:
+            stale_keys.append(k)
+            if only_existing:
+                continue
+
         entry = dict(item)
-        entry["exists"] = p.exists() and p.is_dir()
+        entry["exists"] = exists
         items.append(entry)
+
+    # Automatically purge non-existent workspaces from registry if only_existing is active
+    if only_existing and stale_keys:
+        for k in stale_keys:
+            del data["workspaces"][k]
+        save_workspaces_registry(data)
 
     items.sort(key=lambda x: x.get("last_seen", 0), reverse=True)
     return items

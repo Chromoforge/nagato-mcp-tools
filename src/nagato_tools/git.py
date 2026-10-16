@@ -53,8 +53,10 @@ async def nagato_git(command: str, args: str = "", _ctx: Optional[Any] = None) -
             return _run(["status", "--short"])
 
         if command == "diff":
-            ref = args.strip() or "HEAD~1"
-            return _run(["diff", "--name-only", ref])
+            git_args = ["diff"]
+            if args.strip():
+                git_args.extend(args.strip().split())
+            return _run(git_args)
 
         if command == "revert":
             commit = args.strip()
