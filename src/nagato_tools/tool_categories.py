@@ -37,6 +37,7 @@ class ToolCategory(Enum):
     INSIGHT = auto()
     FINALIZE = auto()
     WIKIPEDIA = auto()
+    LAW = auto()
 
     @property
     def display_name(self) -> str:
@@ -198,6 +199,13 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
         group=CategoryGroup.READ_ONLY,
         example_tools=["nagato_wikipedia_search", "nagato_wikipedia_fetch", "nagato_wikipedia_init", "nagato_wikipedia_status", "nagato_wikipedia_api_search"],
         purpose="Use to search Wikipedia content via local vector database or REST API, and fetch full articles or sections.",
+        allows_state_changes=False,
+    ),
+    ToolCategory.LAW: CategoryMeta(
+        description="German federal laws and court decisions hybrid search and retrieval tools.",
+        group=CategoryGroup.READ_ONLY,
+        example_tools=["nagato_law_search", "nagato_law_fetch", "nagato_law_init", "nagato_law_status", "nagato_law_ingest", "nagato_law_build_index", "nagato_law_compare_models", "nagato_law_list_packs"],
+        purpose="Use to search and fetch German laws and court decisions via hybrid BM25 and dense vectors.",
         allows_state_changes=False,
     ),
 }

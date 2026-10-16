@@ -4,6 +4,14 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed
+- **Default German Law Embedding Model** (`fsm/functions_internal/config.py`): Set `LawConfig.default_model` to `intfloat/multilingual-e5-large` and prioritized it over `paraphrase-multilingual-MiniLM-L12-v2` for enhanced retrieval accuracy.
+- **Global Insight Storage Path Clarification** (`README.md`, `dashboard/README.md`, `fsm/insight/README.md`, `.github/copilot-instructions.md`): Clarified that the global architectural knowledge graph resides in cross-project user-global storage (`~/.nagato/insight.db`) rather than a workspace-local `.nagato/insight.db`.
+
+### Fixed
+- **Global Insight DB Resolution Robustness** (`fsm/insight/store.py`): Added exception and callable checks around `get_global_nagato_home()`, falling back cleanly to `Path.home() / ".nagato"`.
+- **Sync Rewrites for Workspace Registry** (`sync_tools.py`): Added regex import rewrites mapping `fsm.workspace_registry` to `nagato_tools.workspace_registry` during standalone tool builds.
+
 ### Added
 - **Wikipedia Tool Suite** (`fsm/functions_internal/wikipedia.py`, `fsm/tool_categories.py`, `fsm/tool_registry_builder.py`): New dedicated `WIKIPEDIA` tool category with 5 tools for local vector similarity search and live API fallback over Wikipedia encyclopedic knowledge:
   - `nagato_wikipedia_search`: Two-stage search returning compact preview snippets, distance scores, and section metadata without polluting LLM context

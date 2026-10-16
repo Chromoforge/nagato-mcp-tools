@@ -71,11 +71,34 @@ class WikipediaConfig:
 
 
 @dataclass
+class LawConfig:
+    """Configuration for local German Law & Decisions vector database."""
+    db_path: str = ""  # If empty, defaults to ~/.nagato/law/hybrid.db
+    default_model: str = "intfloat/multilingual-e5-large"
+    models: list[str] = field(default_factory=lambda: [
+        "intfloat/multilingual-e5-large",
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "BAAI/bge-small-en-v1.5",
+    ])
+    packs: dict[str, list[str]] = field(default_factory=lambda: {
+        "core": ["bgb", "stgb", "gg", "zpo", "hgb", "bnoto"],
+        "social": ["sgb_1", "sgb_2", "sgb_3", "sgb_4", "sgb_5", "sgb_6", "sgb_7", "sgb_8", "sgb_9_2018", "sgb_10", "sgb_11", "sgb_12", "sgb_14"],
+        "labor": ["arbzg", "kschg", "betrvg", "entgfg", "muschg", "burlg", "tvog"],
+        "admin": ["vwgo", "vwvfg", "bverfg", "thrg", "uvg"],
+        "cases_bgh": ["bgh"],
+        "cases_bverfg": ["bverfg"],
+        "cases_bagh": ["bag"],
+        "cases_bshg": ["bsg"],
+    })
+
+
+@dataclass
 class FunctionsConfig:
     """Root configuration for all functions_internal modules."""
     semantic_search: SemanticSearchConfig = field(default_factory=SemanticSearchConfig)
     lint: LintConfig = field(default_factory=LintConfig)
     wikipedia: WikipediaConfig = field(default_factory=WikipediaConfig)
+    law: LawConfig = field(default_factory=LawConfig)
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     insight: dict = field(default_factory=dict)
     tool_token_limits: dict[str, Any] = field(default_factory=lambda: {
@@ -107,6 +130,27 @@ class FunctionsConfig:
                 dimension=wp_data.get("dimension", 384),
                 dump_cache_dir=wp_data.get("dump_cache_dir", ""),
                 chunk_size=wp_data.get("chunk_size", 512),
+            )
+        if "law" in data and isinstance(data["law"], dict):
+            law_data = data["law"]
+            config.law = LawConfig(
+                db_path=law_data.get("db_path", ""),
+                default_model=law_data.get("default_model", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
+                models=law_data.get("models", [
+                    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    "intfloat/multilingual-e5-large",
+                    "BAAI/bge-small-en-v1.5",
+                ]),
+                packs=law_data.get("packs", {
+                    "core": ["bgb", "stgb", "gg", "zpo", "hgb", "bnoto"],
+                    "social": ["sgb_1", "sgb_2", "sgb_3", "sgb_4", "sgb_5", "sgb_6", "sgb_7", "sgb_8", "sgb_9_2018", "sgb_10", "sgb_11", "sgb_12", "sgb_14"],
+                    "labor": ["arbzg", "kschg", "betrvg", "entgfg", "muschg", "burlg", "tvog"],
+                    "admin": ["vwgo", "vwvfg", "bverfg", "thrg", "uvg"],
+                    "cases_bgh": ["bgh"],
+                    "cases_bverfg": ["bverfg"],
+                    "cases_bagh": ["bag"],
+                    "cases_bshg": ["bsg"],
+                }),
             )
         if "semantic_search" in data:
             ss_data = data["semantic_search"]

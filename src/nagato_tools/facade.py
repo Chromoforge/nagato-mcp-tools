@@ -201,6 +201,7 @@ class ToolFacade:
             'monitor': ToolCategory.SYSTEM,
             'undo': ToolCategory.EDIT,  # undo modifies state
             'wikipedia': ToolCategory.WIKIPEDIA,
+            'law': ToolCategory.LAW,
             'finalize_handler': ToolCategory.FINALIZE,
         }
         return module_to_category.get(module_name)
@@ -231,7 +232,7 @@ class ToolFacade:
         import nagato_tools
         
         # List of modules to scan
-        modules_to_scan = ['edit', 'execute', 'search', 'read', 'lint', 'git', 'web', 'test', 'subgoals', 'create', 'debugger', 'extractsignature', 'extractcallgraph', 'semanticindex', 'errors', 'system', 'shell', 'monitor', 'undo', 'wikipedia', 'token_calculator', 'action_journal']
+        modules_to_scan = ['edit', 'execute', 'search', 'read', 'lint', 'git', 'web', 'test', 'subgoals', 'create', 'debugger', 'extractsignature', 'extractcallgraph', 'semanticindex', 'errors', 'system', 'shell', 'monitor', 'undo', 'wikipedia', 'law', 'token_calculator', 'action_journal']
         
         for module_name in modules_to_scan:
             try:

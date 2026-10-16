@@ -18,6 +18,7 @@
 - ⏪ **Granular Undo/Redo:** Multi-mode undo/redo (steps, time, command, step-target) — rollback edits, shell commands, or entire workflows with precision.
 - ⚡ **Execution & Scripting:** Python code snippet execution with timeout limits and isolated subprocess execution (Note: NOT an OS sandbox; executes with local user permissions).
 - 📚 **Wikipedia Hybrid Search:** SOTA BM25 (FTS5) + Dense Vector (USearch HNSW) with Reciprocal Rank Fusion (RRF). Structural sections via `mwparserfromhell` (no naive chunking). FTS5 always available (zero embeddings). USearch built via CLI after ingestion. Embeddings: FastEmbed `all-MiniLM-L6-v2` (384-dim). Ingestion: `tools/import_wikipedia_dump.py` (streaming, checkpoint/resume). Live API fallback via `nagato_wikipedia_api_search`.
+- ⚖️ **German Law & Decisions Hybrid Search:** SOTA BM25 (FTS5) + Dense Vector (USearch HNSW) with RRF over German federal laws and court decisions. Modular domain packs (`core`, `social`, `labor`, `admin`, `cases_bgh`, etc.), multi-model FastEmbed embeddings (`multilingual-e5-small`, `bge-m3`), and A/B model comparison (`nagato_law_compare_models`). Ingestion via OLDP REST API, Gesetze im Internet XML (GII), or Hugging Face. Two-Stage Search → Fetch.
 - 🧪 **Testing & Quality:** Targeted pytest execution (`nagato_run_test`), configured test suites, and integrated Ruff linting/syntax checks.
 - 🧰 **Git & Shell:** Git log/diff/status/revert, shell execution, DuckDuckGo web search, and interactive prompts.
 - 🧠 **Smart Pre-Parsing:** Automatic input validation and auto-correction before tool execution — catches malformed arguments early.
@@ -257,6 +258,7 @@ The instructions guide the LLM to:
 | **Testing** | `nagato_run_test`<br>`nagato_run_gold_full`<br>`nagato_run_configured_suite` | Run single pytest test nodes or configured test suites. |
 | **Git** | `nagato_git`<br>`nagato_upload` | Git operations (diff, log, status, revert, checkout) and guarded uploads. |
 | **Wikipedia** | `nagato_wikipedia_search`<br>`nagato_wikipedia_fetch`<br>`nagato_wikipedia_api_search`<br>`nagato_wikipedia_init`<br>`nagato_wikipedia_status`<br>`nagato_build_usearch_index` | SOTA Hybrid Search (BM25 + Dense Vector) with Reciprocal Rank Fusion (RRF). **Structural sections** (no naive chunking) via `mwparserfromhell`. **FTS5 BM25** always available (zero embeddings). **USearch HNSW** for dense ANN (Cosine, 384-dim). RRF: `1/(60+rank_bm25) + 1/(60+rank_dense)`. Graceful fallback to pure BM25 if USearch missing. Embeddings: FastEmbed `all-MiniLM-L6-v2` (384-dim). Ingestion: `tools/import_wikipedia_dump.py` (streaming, checkpoint/resume). |
+| **German Law & Decisions** | `nagato_law_search`<br>`nagato_law_fetch`<br>`nagato_law_init`<br>`nagato_law_status`<br>`nagato_law_build_index`<br>`nagato_law_ingest`<br>`nagato_law_compare_models`<br>`nagato_law_list_packs` | SOTA Hybrid Search (BM25 + Dense Vector) with Reciprocal Rank Fusion (RRF) over German federal laws and court decisions. Modular domain packs (`core`, `social`, `labor`, `admin`, `cases_*`). Per-model and per-pack USearch HNSW vector indexes. Multi-model FastEmbed embeddings (`intfloat/multilingual-e5-small`, `BAAI/bge-m3`). Ingestion via OLDP API, GII XML bulk, or HF Datasets. |
 | **Shell** | `nagato_shell`<br>`nagato_shell_str` | Shell command execution (string and structured output). |
 | **Web** | `nagato_web_search` | DuckDuckGo web search. |
 | **System** | `nagato_is_agent_running` | Agent monitoring. |
@@ -337,7 +339,7 @@ Control which tools are available via:
 }
 ```
 
-**Category names** match `ToolCategory` enum: `EDIT`, `TESTING`, `GIT`, `SEARCH`, `WEB`, `READ`, `EXECUTE`, `DEBUGGING`, `SYSTEM`, `SHELL`, `CREATION`, `PLANNING`, `WIKIPEDIA`.
+**Category names** match `ToolCategory` enum: `EDIT`, `TESTING`, `GIT`, `SEARCH`, `WEB`, `READ`, `EXECUTE`, `DEBUGGING`, `SYSTEM`, `SHELL`, `CREATION`, `PLANNING`, `WIKIPEDIA`, `LAW`.
 
 ### 2. Explicit Parameters (Override Config)
 ```python
@@ -401,6 +403,25 @@ Standalone tool behaviors (Semantic Search, Ruff Linting, and Output Truncation)
     "batch_size": 2000,
     "device": "auto",
     "min_section_chars": 150
+  },
+  "law": {
+    "db_path": "~/.nagato/law/hybrid.db",
+    "default_model": "intfloat/multilingual-e5-small",
+    "models": [
+      "intfloat/multilingual-e5-small",
+      "BAAI/bge-m3",
+      "sentence-transformers/all-MiniLM-L6-v2"
+    ],
+    "packs": {
+      "core": ["bgb", "stgb", "gg", "zpo", "hgb", "bnoto"],
+      "social": ["sgb_1", "sgb_2", "sgb_3", "sgb_4", "sgb_5", "sgb_6", "sgb_7", "sgb_8", "sgb_9", "sgb_10", "sgb_11", "sgb_12"],
+      "labor": ["arbzg", "kschg", "betrvg", "entgfg", "muschg", "burlg", "tvog"],
+      "admin": ["vwgo", "vwvfg", "bverfg", "thrg", "uvg"],
+      "cases_bgh": ["bgh"],
+      "cases_bverfg": ["bverfg"],
+      "cases_bagh": ["bag"],
+      "cases_bshg": ["bsg"]
+    }
   },
   "lint": {
     "enabled": true,
@@ -491,6 +512,25 @@ Here's a full `.nagato/functions_config.json` showing all available options:
     "device": "auto",
     "min_section_chars": 150
   },
+  "law": {
+    "db_path": "~/.nagato/law/hybrid.db",
+    "default_model": "intfloat/multilingual-e5-small",
+    "models": [
+      "intfloat/multilingual-e5-small",
+      "BAAI/bge-m3",
+      "sentence-transformers/all-MiniLM-L6-v2"
+    ],
+    "packs": {
+      "core": ["bgb", "stgb", "gg", "zpo", "hgb", "bnoto"],
+      "social": ["sgb_1", "sgb_2", "sgb_3", "sgb_4", "sgb_5", "sgb_6", "sgb_7", "sgb_8", "sgb_9", "sgb_10", "sgb_11", "sgb_12"],
+      "labor": ["arbzg", "kschg", "betrvg", "entgfg", "muschg", "burlg", "tvog"],
+      "admin": ["vwgo", "vwvfg", "bverfg", "thrg", "uvg"],
+      "cases_bgh": ["bgh"],
+      "cases_bverfg": ["bverfg"],
+      "cases_bagh": ["bag"],
+      "cases_bshg": ["bsg"]
+    }
+  },
   "lint": {
     "enabled": true,
     "soft_mode": true,
@@ -514,6 +554,7 @@ Here's a full `.nagato/functions_config.json` showing all available options:
 - **`insight`** — Enables the knowledge graph (requires `[semantic]` extra)
 - **`semantic_search`** — Vector search configuration for local codebase symbols and chunks
 - **`wikipedia`** — SOTA Hybrid Search (BM25 + Dense Vector) configuration for Wikipedia
+- **`law`** — German Law & Court Decisions Hybrid Search configuration
 - **`lint`** — Ruff linting behavior
 - **`tool_token_limits`** — Output truncation per category (0 = unlimited)
 - **`redundant_read_detection`** — Warns when reading the same unchanged file multiple times (`enabled`: toggle feature, `warn_only`: only prepend warning, never block)

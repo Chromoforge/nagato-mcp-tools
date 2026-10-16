@@ -25,6 +25,7 @@ from .undo import *
 from .shell import *
 from .monitor import *
 from .wikipedia import *
+from .law import *
 from ._post_edit_safety import *
 from .input_repair import *
 
@@ -71,6 +72,14 @@ __all__ = [
     "nagato_wikipedia_init",
     "nagato_wikipedia_status",
     "nagato_build_usearch_index",
+    "nagato_law_init",
+    "nagato_law_list_packs",
+    "nagato_law_status",
+    "nagato_law_ingest",
+    "nagato_law_build_index",
+    "nagato_law_search",
+    "nagato_law_fetch",
+    "nagato_law_compare_models",
     "ToolFacade",
     "get_tool_facade",
 ]
