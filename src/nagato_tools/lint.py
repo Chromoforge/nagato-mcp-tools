@@ -2,7 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from nagato_tools.config import get_lint_config, get_workspace_root
+from nagato_tools.config import get_lint_config, get_workspace_root, resolve_allowed_path
 from nagato_tools.errors import _nagato_error as nagato_error
 
 
@@ -54,12 +54,10 @@ async def nagato_lint(file: str, _ctx=None) -> str:
         _ctx: Optional session context (injected by facade).
     """
     workspace_root = get_workspace_root()
-    target_file = workspace_root / file
+    target_file, is_allowed = resolve_allowed_path(file, ctx=_ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_lint")
 
     # Load lint configuration

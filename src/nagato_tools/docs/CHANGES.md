@@ -4,11 +4,15 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+- **Cross-Workspace Allowed Roots Whitelist & Denied Paths** (`fsm/functions_internal/config.py`, `read.py`, `edit.py`, `search.py`, `lint.py`, `git.py`, `shell.py`): Added `"allowed_roots"` whitelist and `"denied_paths"` access blocklist in `.nagato/functions_config.json`. Authorizes tools to read, edit, search, and lint across multiple workspace roots or external tool repositories while preserving path-traversal protection and cleanly separating indexing exclusions (`ignored_dirs`) from hard access permissions (`denied_paths`).
+
 ### Changed
 - **Default German Law Embedding Model** (`fsm/functions_internal/config.py`): Set `LawConfig.default_model` to `intfloat/multilingual-e5-large` and prioritized it over `paraphrase-multilingual-MiniLM-L12-v2` for enhanced retrieval accuracy.
 - **Global Insight Storage Path Clarification** (`README.md`, `dashboard/README.md`, `fsm/insight/README.md`, `.github/copilot-instructions.md`): Clarified that the global architectural knowledge graph resides in cross-project user-global storage (`~/.nagato/insight.db`) rather than a workspace-local `.nagato/insight.db`.
 
 ### Fixed
+- **Git Tool Diff Output** (`fsm/functions_internal/git.py`): Replaced hardcoded `diff --name-only HEAD~1` with flexible `git diff` supporting optional arguments (e.g. revisions, pathspecs, flags) and returning actual diff hunks instead of only filenames.
 - **Global Insight DB Resolution Robustness** (`fsm/insight/store.py`): Added exception and callable checks around `get_global_nagato_home()`, falling back cleanly to `Path.home() / ".nagato"`.
 - **Sync Rewrites for Workspace Registry** (`sync_tools.py`): Added regex import rewrites mapping `fsm.workspace_registry` to `nagato_tools.workspace_registry` during standalone tool builds.
 

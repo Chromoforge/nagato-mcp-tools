@@ -9,6 +9,7 @@ from nagato_tools.config import (
     get_ignored_dirs,
     get_semantic_search_config,
     save_semantic_search_root,
+    resolve_allowed_path,
 )
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _check_irrelevance_guard
@@ -227,12 +228,10 @@ async def nagato_searchInFile(query: str, file: str, max_results: int = 5, start
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
-    target_file = workspace_root / file
+    target_file, is_allowed = resolve_allowed_path(file, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_searchInFile")
 
     if not target_file.exists():
@@ -276,12 +275,10 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
-    target_dir = workspace_root / dir
+    target_dir, is_allowed = resolve_allowed_path(dir, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_dir.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {dir} resolves outside workspace root.", tool="nagato_searchInFiles")
 
     if not target_dir.exists() or not target_dir.is_dir():
@@ -297,7 +294,14 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
     window_end = start_offset + max_files
     for file_path in _iter_searchable_text_files(target_dir, workspace_root, ctx):
         files_scanned += 1
-        relative_path = file_path.relative_to(workspace_root)
+        try:
+            relative_path = file_path.relative_to(workspace_root)
+        except ValueError:
+            # File is under an external allowed root
+            try:
+                relative_path = file_path.relative_to(target_dir)
+            except ValueError:
+                relative_path = file_path
         with file_path.open("r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
 
@@ -384,12 +388,10 @@ async def nagato_find_file(filename: str, dir: str = ".", _ctx: Optional[Any] = 
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
-    target_dir = workspace_root / dir
+    target_dir, is_allowed = resolve_allowed_path(dir, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_dir.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {dir} resolves outside workspace root.", tool="nagato_find_file")
 
     if not target_dir.exists() or not target_dir.is_dir():
@@ -405,7 +407,13 @@ async def nagato_find_file(filename: str, dir: str = ".", _ctx: Optional[Any] = 
         results = []
         for p in matches:
             # Return path relative to the workspace root for consistency with other tools
-            results.append(str(p.relative_to(workspace_root)))
+            try:
+                results.append(str(p.relative_to(workspace_root)))
+            except ValueError:
+                try:
+                    results.append(str(p.relative_to(target_dir)))
+                except ValueError:
+                    results.append(str(p))
             
         notice = _check_irrelevance_guard(dir, ctx=ctx, workspace_root=workspace_root, tool_name="nagato_find_file")
         return notice + "Files found:\n" + "\n".join(results)
@@ -429,12 +437,10 @@ async def nagato_searchAST(query: str, file: str, max_results: int = 5, start_of
     import ast
 
     workspace_root = _get_workspace_root(_ctx)
-    target_file = workspace_root / file
+    target_file, is_allowed = resolve_allowed_path(file, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_searchAST")
 
     if not target_file.exists():

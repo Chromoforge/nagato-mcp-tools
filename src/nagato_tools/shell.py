@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from nagato_tools.config import get_tool_token_limit, get_workspace_root
-from nagato_tools.config import load_functions_config
+from nagato_tools.config import load_functions_config, resolve_allowed_path
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _get_context_token_limit, _truncate_to_token_limit
 
@@ -336,13 +336,9 @@ async def _nagato_shell_raw(
     if cwd is None:
         cwd = str(workspace_root)
     else:
-        cwd_path = Path(cwd)
-        if not cwd_path.is_absolute():
-            cwd_path = workspace_root / cwd_path
-        # Security: ensure cwd is within workspace
-        try:
-            cwd_path.resolve().relative_to(workspace_root.resolve())
-        except ValueError:
+        cwd_path, is_allowed = resolve_allowed_path(cwd, ctx=ctx, workspace_root=workspace_root)
+        # Security: ensure cwd is within allowed workspace roots
+        if not is_allowed:
             error_msg = f"Working directory '{cwd}' is outside workspace root"
             _log_command(session_id, cmd_list, cwd, {
                 "exit_code": None,

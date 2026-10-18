@@ -4,194 +4,71 @@ Nagato MCP Tools — Agent Instructions (Standalone Mode)
 
 # Project Nagato // Nagato MCP Tools — Agent Instructions (Standalone Mode)
 
+## CRITICAL FIRST ACTION (MANDATORY ON EVERY USER TURN)
+Whatever the user asks (questions, concepts, code analysis, brainstorming, or edits):
+1. **NEVER answer purely from LLM memory.** Do not guess, theorize, or assume project context.
+2. **ALWAYS query project knowledge FIRST** before outputting text:
+   - Concepts / design rationale / general queries: `nagato_unified_search(query=...)`
+   - Architecture / symbol definitions: `nagato_view_radar` or `nagato_read_signatures`
+   - Code logic exploration: `nagato_semantic_search` or `nagato_searchInFiles`
+3. Tool call MUST happen in your first turn. Zero plain-text answers prior to checking project state.
+
 ## Description
 
-You are interacting with the **standalone** Nagato MCP Tools suite: a flat catalogue of `nagato_*` tools exposed directly by an MCP server. Each tool is a normal, independently-callable MCP tool — call whichever one fits the task at hand, using exactly the parameters its own tool description documents.
+You interact with the **standalone** Nagato MCP Tools suite: a flat catalogue of `nagato_*` tools. Each tool is an independent MCP tool called directly with its documented parameters.
 
 > **Tool Invocation**:
-> Every tool (e.g. `nagato_edit`, `nagato_searchInFiles`, `nagato_read_signatures`, `nagato_undo_standalone`) is exposed directly as an individual MCP tool.
-> Call the specific tool you need directly with its documented parameters. Do NOT simulate or print JSON tool calls in plain text — always invoke the tool directly.
+> Invoke MCP tools directly using the tool call interface. Do not simulate, describe, or print tool calls in prose.
 
 ## General Information
 
-a) **Stateless per call**
-   Every tool call is independent. A tool returns its result; the next tool call starts
-   fresh. If you need multi-step context, keep it in your own reasoning or in
-   scratch files.
-
-b) **Session-scoped via `NAGATO_SESSION_ID`**
-   Undo/redo history and scratch dirs can be scoped per project via the `NAGATO_SESSION_ID`
-   environment variable or `--session-id` flag (e.g. `proj:my-app`). Default if unset: `"standalone"`.
-
-c) **Three persistence layers with a unified sync pathway:**
-
-   - A lightweight **AST symbol database** (plain SQLite, no embeddings, no LLM involved) behind
-     `nagato_read_signatures` / `nagato_extract_callers` / `nagato_extract_callees`. Built and
-     refreshed on demand with `nagato_rebuild_symbol_db`.
-
-   - A **Semantic Search index** (vector embeddings) for `nagato_semantic_search`. Auto-indexes on
-     every call via `ensure_index_current()`. Configured via `nagato_set_semantic_search_root`.
-
-   - The optional **Insight knowledge graph** — a separate SQLite store for deliberately-curated
-     architecture concepts (see the Insight section below).**
-
-   **Each layer can be initialized independently, but the recommended workflow uses the combined sync tools:**
-
-   | Layer | Purpose | Standalone Initialization | Auto-Reindex? |
-   |-------|---------|---------------------------|---------------|
-   | **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
-   | **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
-   | **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
-
-   **Combined Single-Pass Sync** (eliminates duplicate AST parsing — updates both Semantic Index AND Insight Graph in one atomic operation):
-   | Tool | Scope | Use Case |
-   |------|-------|----------|
-   | `nagato_sync_file_all(file_rel_path="path/to/file.py")` | Single file | Incremental updates after editing a file |
-   | `nagato_sync_directory_all(root_dir=".")` | Entire project | Full project sync, CI/bootstrap |
-
-   **The `docstring_only` config applies ONLY to Semantic Search embeddings, not Symbol DB or Insight Graph.**
-
-d) **Flat tool surface**
-   Tools are grouped by category (EDIT, READ, SEARCH, TESTING, EXECUTE,
-   WEB, GIT, CREATION, DEBUGGING, SHELL, SYSTEM) for documentation purposes only —
-   there is no gating on which category may run when.
+- **Session Scope:** Optionally scoped per project via `NAGATO_SESSION_ID` (default: `"standalone"`).
+- **Persistence:** SQLite AST symbol DB.
+- **Flat Surface:** All tools (EDIT, READ, SEARCH, TESTING, EXECUTE, WEB, GIT, CREATION, DEBUGGING, SHELL, SYSTEM) can be invoked whenever relevant.
 
 
 ## Operational Protocol
 
-### 0. 🛑 CRITICAL RULES: ANTI-LAZY PROTOCOL 🛑
-**DO NOT USE `nagato_read_file` OR `nagato_read_lines` FOR CODE EXPLORATION.** 
-Blindly reading entire files to search for functions, classes, or logic is a severe anti-pattern that destroys the context window and leads to task failure.
+### 1. Code Exploration Rules
+- Always use structural index tools (`nagato_read_signatures`, `nagato_extract_callers`, `nagato_semantic_search`) to locate definitions, usages, and logic.
+- Use `nagato_read_file` or `nagato_read_lines` solely for reading non-code configs (`.yaml`, `.json`, `.md`) or inspecting specific verified line ranges. Never scan files blindly.
 
-*   **FORBIDDEN:** Do NOT guess file paths. Do NOT read a file just to "see what's in it" or to locate a symbol.
-*   **MANDATORY:** You MUST use the specialized index tools to navigate the codebase:
-    *   Looking for a specific function/class? **Use `nagato_read_signatures`**.
-    *   Need to find where a symbol is used? **Use `nagato_extract_callers`**.
-    *   Looking for fuzzy logic or intent (e.g., "auth handling")? **Use `nagato_semantic_search`**.
-*   **SOLE EXCEPTION:** You may ONLY use `nagato_read_file` if you already know the exact path AND you are reading a non-AST compatible config/text file (e.g., `.yaml`, `.json`, `.md`), or if another tool explicitly instructed you to read the raw source of a specific file.
+### 1. Codebase Sync & Persistence Pathway
+Maintain repository indices using combined single-pass synchronization:
+- `nagato_sync_directory_all(root_dir=".")`: Full project sync (updates semantic index and insight graph together).
+- `nagato_sync_file_all(file_rel_path="...")`: Incremental sync after modifying a file.
+- `nagato_rebuild_symbol_db(dir=".")`: Rebuilds the AST symbol database when cross-file symbol lookups are missing.
 
-Violation of this strict routing will result in immediate context bloat. You are a specialized agent; act like one and use the specialized tools.
+### 2. Code Exploration
+Select the tool matching your known information:
 
+| Given | Tool | Notes |
+| --- | --- | --- |
+| Exact symbol name (repo-wide) | `nagato_read_signatures(target_symbol=...)` | Fast lookup across the indexed symbol DB. |
+| Exact symbol name in specific file | `nagato_read_signatures(file_path=...)` | Scoped to file; falls back to live AST parse. |
+| Partial/fuzzy symbol in single file | `nagato_searchAST(query=..., file=...)` | Structural AST substring match. |
+| Callers or callees of symbol | `nagato_extract_callers` / `nagato_extract_callees` | Direct function and method call graph. |
+| Literal text, config, or error message | `nagato_searchInFile` / `nagato_searchInFiles` | Plain substring search across text files. |
+| Filename | `nagato_find_file(filename=...)` | Exact filename search. |
+| Concept or natural language intent | `nagato_semantic_search(query=...)` | Vector search over code chunks. |
 
-### 0. System Initialization (Unified Sync Pathway)
+### 3. Modification & Verification Workflow
+- **Edit**: Apply targeted changes via `nagato_edit` or `nagato_edit_lines`.
+- **Sync**: Run `nagato_sync_file_all` on modified files.
+- **Lint**: Run `nagato_lint(file=...)` after Python edits.
+- **Test**: Run `nagato_run_test` for the focused test node; run `nagato_run_configured_suite` only for full acceptance runs.
 
-**Three persistence layers exist, but the recommended workflow uses combined single-pass sync tools that update both the Semantic Index and Insight Graph in one atomic operation:**
+## Calling Tools
 
-| Layer | Purpose | Standalone Initialization | Auto-Reindex? |
-|-------|---------|---------------------------|---------------|
-| **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
-| **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
-| **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
-
-**Combined Single-Pass Sync** (eliminates duplicate AST parsing — updates both Semantic Index AND Insight Graph in one atomic operation):
-| Tool | Scope | Use Case |
-|------|-------|----------|
-| `nagato_sync_file_all(file_rel_path="path/to/file.py")` | Single file | Incremental updates after editing a file |
-| `nagato_sync_directory_all(root_dir=".")` | Entire project | Full project sync, CI/bootstrap |
-
-**The `docstring_only` config applies ONLY to Semantic Search embeddings, not Symbol DB or Insight Graph.**
-
-1. **Getting started:**
-   Call whichever tool fits your task directly — no setup call is required first.
-   Optional: set `NAGATO_SESSION_ID` for session-isolated undo/scratch history (defaults to `standalone`).
-
-2. **Choosing a code-exploration tool:**
-   Several tools overlap in what they can technically find — picking the wrong one wastes turns
-   or misses results. Match the tool to what you actually know:
-
-   | You know... | Use | Why |
-   | --- | --- | --- |
-   | Exact symbol name, any file | `nagato_read_signatures(target_symbol=...)` (no `file_path`) | Queries the pre-built symbol DB across the whole repo — fast, no false positives from comments/strings. **PRIMARY tool for symbol lookup.** |
-   | Exact symbol name + which file | `nagato_read_signatures(file_path=...)` | Same DB, scoped to one file; falls back to a live AST parse if that file isn't indexed, so it always works even on an empty DB. |
-   | Partial/fuzzy symbol name, single file only | `nagato_searchAST(query, file)` | Structural AST substring match. Single-file only — for fuzzy cross-file lookup, there is no direct equivalent; narrow with `nagato_find_file` first, or use `nagato_read_signatures` with the exact name once you know it. |
-   | Who calls / is called by a symbol | `nagato_extract_callers` / `nagato_extract_callees` | Reads the same symbol DB's call table. Direct function/method calls only — no inheritance, no decorators. |
-   | A literal string, constant, error message, import, config value | `nagato_searchInFile` / `nagato_searchInFiles` | Plain case-insensitive substring match, no AST — works on any text file. NOT for symbol lookup: no structural awareness, will false-positive on comments/strings/docs. |
-   | Only the filename, not its path | `nagato_find_file` | Recursive exact-filename search from a starting directory. |
-   | Intent/behavior, not exact names (e.g. "where do we validate emails?") | `nagato_semantic_search` | Vector search over indexed code chunks. Self-indexes on every call (`auto_index`), so — unlike the symbol DB — it never needs a manual rebuild. |
-   **Symbol DB staleness caveat:** the DB behind `nagato_read_signatures` (global mode), `nagato_extract_callers`,
-   and `nagato_extract_callees` does **not** auto-reindex like `nagato_semantic_search` does. If a global lookup
-   for a symbol you know exists comes back empty, run `nagato_rebuild_symbol_db` (optionally scoped to a `dir`)
-   before concluding the symbol doesn't exist — it may just be stale or never indexed.
-
-3. **Safe Modification & Creation Loop:**
-   - **Edit & Create**: Use `nagato_edit` for targeted string replacement or creating new files (auto-creates if non-existent — there is no separate `nagato_create` tool), and `nagato_edit_lines` for line-range rewrites.
-   - **Directories**: Use `nagato_create_dir` for creating new directories.
-   - **Syntax & Style**: Run `nagato_lint` immediately after editing — it does a hard syntax check plus a configurable Ruff pass, but only for `.py` files (no-op on everything else).
-   - **Verify**: Run `nagato_run_test` for one narrow pytest node/file — it waits for completion and returns the tail of the output. Reach for `nagato_run_configured_suite` / `nagato_run_gold_full` only when you actually need the project's full configured acceptance suite (`TitanTest/config.json`); they're slower and not meant for iterating on a single fix.
-   - **Rollback**: If an edit broke dependencies or introduced bugs, use `nagato_undo_standalone` to revert cleanly (see Error Recovery below).
-
-4. **File Deletions & Renames:**
-   - `nagato_delete` to safely remove files.
-   - `nagato_rename` to rename or move files.
-
-5. **Running commands / code:**
-   - `nagato_shell` / `nagato_shell_str`: run an arbitrary shell command. They are identical — `nagato_shell_str` is a display-oriented alias, not a different tool. Default timeout is 5s (max 30s), so use these for short, quick commands only.
-   - `nagato_execute_snippet`: runs a Python code snippet in a subprocess (30s default timeout), with `PYTHONPATH` set to the workspace root. **This is NOT a sandbox** — it runs with your full user permissions. Never point it at untrusted or externally-sourced code.
-   - `nagato_git`: a restricted wrapper, **not** a general git passthrough — only `log`, `status`, `diff`, `revert`, `checkout_file`, `reset_file` are accepted as the `command` argument, with a separate `args` string (e.g. `nagato_git(command="revert", args="a1b2c3d")`, or `nagato_git(command="checkout_file", args="HEAD~2 -- path/to/file.py")`).
-   - `nagato_web_search`: web search for docs, error messages, or API references.
-   - `nagato_is_agent_running`: heuristic CPU/GPU/VRAM check for whether another agent process is already busy on this machine — check before kicking off resource-heavy parallel work.
-
-## Error Recovery & Undo
-
-- **`nagato_undo_standalone`**: persistent undo/redo over every edit/create/delete this tool made, tracked as a **single global chronological stack** — not scoped per file.
-  - `mode="step"` (default), `value=N` — undo the last N operations, most recent first, regardless of which file each one touched.
-  - `mode="redo"`, `value=N` — redo N previously-undone operations.
-  - There is **no** `mode="time"` or `mode="command"` — only `"step"` and `"redo"` are supported; passing anything other than `"redo"` is silently treated as `"step"`.
-- For regressions this tool can't reach (changes made outside these tools, or you need to inspect history first), use `nagato_git` directly: `status`/`diff`/`log` to inspect, `revert`/`checkout_file`/`reset_file` to act.
-
-## Calling Tools — Concrete Syntax
-
-Every standalone tool is called directly by its full name; each `nagato_*` tool is an independent MCP tool.
-
-### Mandatory pattern (every call)
-```
-Call: <tool_name>(param1="value", param2="value", ...)
-```
-Always invoke the tool directly in the same turn. Never describe, narrate, or simulate a call in prose without the actual invocation.
-
-### Common invocation examples
-```
-# Read / search
-nagato_read_signatures(target_symbol="...")
-nagato_searchInFiles(query="...", path="...")
-nagato_find_file(filename="...")
-
-# Edit / create
-nagato_edit(file_path="...", old_string="...", new_string="...")
-nagato_edit_lines(file="...", start_line=1, end_line=10, new_code="...")
-nagato_create_dir(dir_path="...")
-
-# Test / verify
-nagato_run_test(test_node_id="...")
-nagato_run_configured_suite()
-
-# Undo / rollback
-nagato_undo_standalone(mode="step", value=1)
-
-# Shell / execute
-nagato_shell(command="...", timeout=5)
-nagato_execute_snippet(code="...", timeout=30)
-
-# Web / search
-nagato_web_search(query="...")
-
-# System / info
-nagato_is_agent_running()
-```
-
-### Critical rules
-1. **Always invoke directly.** Never write "I will call X" or "Calling X..." without the actual `nagato_*` invocation.
-2. **Always include required parameters.** Check the tool's docstring for mandatory args (e.g. `file_path`, `target_symbol`).
-3. **No `session_id` required.** Standalone mode is stateless per call; `NAGATO_SESSION_ID` is optional for undo scoping only.
+- Invoke MCP tools directly via the tool-calling mechanism.
+- Do not simulate, narrate, or describe tool invocations in text.
+- Pass required parameters according to the tool schemas.
 
 
 ## Error Recovery & Undo
 
-- **`nagato_undo_standalone`**: persistent undo/redo over every edit/create/delete this tool made, tracked as a **single global chronological stack** — not scoped per file.
-  - `mode="step"` (default), `value=N` — undo the last N operations, most recent first, regardless of which file each one touched.
-  - `mode="redo"`, `value=N` — redo N previously-undone operations.
-  - Passing anything other than `"redo"` is silently treated as `"step"`.
-- For regressions this tool can't reach (changes made outside these tools, or you need to inspect history first), use `nagato_git` directly: `status`/`diff`/`log` to inspect, `revert`/`checkout_file`/`reset_file` to act.
+- `nagato_undo_standalone`: Roll back or redo workspace edits in chronological steps.
+- `nagato_git`: Inspect git state (`status`, `diff`, `log`) or revert commits/files (`revert`, `checkout_file`, `reset_file`).
 
 
 ## Coding Guidelines

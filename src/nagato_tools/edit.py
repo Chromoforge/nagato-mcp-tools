@@ -9,7 +9,7 @@ from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.lint import nagato_lint, validate_content_syntax
 from nagato_tools.read import _check_irrelevance_guard
 from nagato_tools.semanticindex import SemanticIndexSearch
-from nagato_tools.config import get_semantic_search_config
+from nagato_tools.config import get_semantic_search_config, resolve_allowed_path
 def _get_semantic_indexer() -> SemanticIndexSearch:
     """Create a SemanticIndexSearch instance with current config (including docstring_only)."""
     config = get_semantic_search_config()
@@ -184,12 +184,11 @@ async def nagato_edit(
                      For NEW files, this becomes the entire file content.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
     """
-    target_file = _get_workspace_root(_ctx) / file
+    workspace_root = _get_workspace_root(_ctx)
+    target_file, is_allowed = resolve_allowed_path(file, ctx=_ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = _get_workspace_root(_ctx).resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_edit")
 
     file_exists = target_file.exists()
@@ -360,12 +359,11 @@ async def nagato_edit_lines(
         For NEW files (auto-create): Must use start_line=1 and end_line=0 (or end_line < start_line).
         The new_code becomes the complete file content.
     """
-    target_file = _get_workspace_root(_ctx) / file
+    workspace_root = _get_workspace_root(_ctx)
+    target_file, is_allowed = resolve_allowed_path(file, ctx=_ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = _get_workspace_root(_ctx).resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_edit_lines")
 
     file_exists = target_file.exists()
@@ -589,12 +587,11 @@ async def nagato_delete(
         file: Relative path to the file from the workspace root.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
     """
-    target_file = _get_workspace_root(_ctx) / file
+    workspace_root = _get_workspace_root(_ctx)
+    target_file, is_allowed = resolve_allowed_path(file, ctx=_ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = _get_workspace_root(_ctx).resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_delete")
 
     if not target_file.exists():
@@ -659,18 +656,16 @@ async def nagato_rename(
         overwrite: If True, overwrite destination if it exists. Default: False.
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
     """
-    source_file = _get_workspace_root(_ctx) / source
-    dest_file = _get_workspace_root(_ctx) / destination
+    workspace_root = _get_workspace_root(_ctx)
+    source_file, source_allowed = resolve_allowed_path(source, ctx=_ctx, workspace_root=workspace_root)
+    dest_file, dest_allowed = resolve_allowed_path(destination, ctx=_ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace for source
-    resolved_source = source_file.resolve()
-    workspace_root_resolved = _get_workspace_root(_ctx).resolve()
-    if not resolved_source.is_relative_to(workspace_root_resolved):
+    if not source_allowed:
         return nagato_error(f"Source path {source} resolves outside workspace root.", tool="nagato_rename")
 
     # Guard: prevent path traversal outside workspace for destination
-    resolved_dest = dest_file.resolve()
-    if not resolved_dest.is_relative_to(workspace_root_resolved):
+    if not dest_allowed:
         return nagato_error(f"Destination path {destination} resolves outside workspace root.", tool="nagato_rename")
 
     if not source_file.exists():
@@ -751,12 +746,10 @@ async def nagato_create_dir(
         _ctx: Optional session context (injected by facade). If not provided, uses the global session.
     """
     workspace_root = _get_workspace_root(_ctx)
-    target_dir = workspace_root / dir
+    target_dir, is_allowed = resolve_allowed_path(dir, ctx=_ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_dir.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {dir} resolves outside workspace root.", tool="nagato_create_dir")
 
     if target_dir.exists():

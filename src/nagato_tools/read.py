@@ -5,6 +5,7 @@ from nagato_tools.config import get_tool_token_limit, get_workspace_root
 from nagato_tools.ctx_mock import get_mock_context
 from nagato_tools import edit as edit_module
 from nagato_tools.errors import _nagato_error as nagato_error
+from nagato_tools.config import resolve_allowed_path
 from nagato_tools.token_calculator import estimate
 # Database path - can be overridden for testing
 DB_PATH = None
@@ -208,12 +209,10 @@ async def nagato_read_file(file: str, _ctx: Optional[Any] = None) -> str:
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
-    target_file = workspace_root / file
+    target_file, is_allowed = resolve_allowed_path(file, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_read_file")
 
     if not target_file.exists():
@@ -257,12 +256,10 @@ async def nagato_read_lines(file: str, start_line: int, end_line: int, _ctx: Opt
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
-    target_file = workspace_root / file
+    target_file, is_allowed = resolve_allowed_path(file, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_file.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {file} resolves outside workspace root.", tool="nagato_read_lines")
 
     if not target_file.exists():
@@ -313,12 +310,10 @@ async def nagato_list_dir(dir: str, _ctx: Optional[Any] = None) -> str:
     """
     ctx = _get_context(_ctx)
     workspace_root = _get_workspace_root(_ctx)
-    target_dir = workspace_root / dir
+    target_dir, is_allowed = resolve_allowed_path(dir, ctx=ctx, workspace_root=workspace_root)
 
     # Guard: prevent path traversal outside workspace
-    resolved = target_dir.resolve()
-    workspace_root_resolved = workspace_root.resolve()
-    if not resolved.is_relative_to(workspace_root_resolved):
+    if not is_allowed:
         return nagato_error(f"Path {dir} resolves outside workspace root.", tool="nagato_list_dir")
 
     if not target_dir.exists() or not target_dir.is_dir():
@@ -412,10 +407,8 @@ def nagato_read_signatures(file_path: str = None, target_symbol: str = None, lim
     # Case 2: local file analysis (either via DB or live AST)
     if file_path:
         workspace_root = _get_workspace_root(_ctx)
-        target_file = workspace_root / file_path
-        resolved = target_file.resolve()
-        workspace_root_resolved = workspace_root.resolve()
-        if not resolved.is_relative_to(workspace_root_resolved):
+        target_file, is_allowed = resolve_allowed_path(file_path, ctx=ctx, workspace_root=workspace_root)
+        if not is_allowed:
             return nagato_error(f"Path {file_path} resolves outside workspace root.", tool="nagato_read_signatures")
 
         # Optional: First check the DB for data on this file

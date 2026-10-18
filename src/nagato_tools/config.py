@@ -109,13 +109,27 @@ class FunctionsConfig:
     tool_filtering: dict = field(default_factory=lambda: {
         "denied_tools": ["nagato_shell", "nagato_upload", "nagato_is_agent_running"]
     })  # allowed_tools, denied_tools, allowed_categories
+    allowed_roots: list[str] = field(default_factory=list)  # Whitelist of additional workspace roots/directories
+    denied_paths: list[str] = field(default_factory=list)  # Hard access blocklist (e.g. [".env", "secrets/"])
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FunctionsConfig":
         """Create config from dictionary."""
         config = cls()
+        if "allowed_roots" in data and isinstance(data["allowed_roots"], list):
+            config.allowed_roots = [str(r) for r in data["allowed_roots"]]
+        if "denied_paths" in data and isinstance(data["denied_paths"], list):
+            config.denied_paths = [str(p) for p in data["denied_paths"]]
+        elif "access" in data and isinstance(data["access"], dict):
+            access_data = data["access"]
+            if "denied_paths" in access_data and isinstance(access_data["denied_paths"], list):
+                config.denied_paths = [str(p) for p in access_data["denied_paths"]]
         if "ignored_dirs" in data:
             config.ignored_dirs = data["ignored_dirs"]
+        elif "indexing" in data and isinstance(data["indexing"], dict):
+            idx_data = data["indexing"]
+            if "ignored_dirs" in idx_data and isinstance(idx_data["ignored_dirs"], list):
+                config.ignored_dirs = idx_data["ignored_dirs"]
         if "insight" in data and isinstance(data["insight"], dict):
             config.insight = data["insight"]
         if "tool_token_limits" in data and isinstance(data["tool_token_limits"], dict):
@@ -196,6 +210,8 @@ def _write_functions_config(config: FunctionsConfig, config_path: Path) -> None:
     """Write FunctionsConfig to JSON file."""
     # Convert config to dictionary for JSON serialization
     data = {
+        "allowed_roots": config.allowed_roots,
+        "denied_paths": config.denied_paths,
         "ignored_dirs": config.ignored_dirs,
         "insight": config.insight,
         "tool_token_limits": config.tool_token_limits,
@@ -277,6 +293,84 @@ def get_lint_config(config_path: Optional[Path] = None, ctx: Optional[Any] = Non
 def get_ignored_dirs(config_path: Optional[Path] = None, ctx: Optional[Any] = None) -> frozenset[str]:
     """Get ignored directories set as a frozenset."""
     return frozenset(load_functions_config(config_path, ctx).ignored_dirs)
+
+
+def get_allowed_roots(config_path: Optional[Path] = None, ctx: Optional[Any] = None, workspace_root: Optional[Path] = None) -> list[Path]:
+    """
+    Get all authorized root directories.
+    Always includes the primary workspace root, plus any additional roots specified in allowed_roots.
+    All returned paths are resolved absolute paths.
+    """
+    if workspace_root is None:
+        workspace_root = _get_workspace_root(ctx)
+    primary = workspace_root.resolve()
+    roots = [primary]
+
+    cfg = load_functions_config(config_path, ctx)
+    for root_str in cfg.allowed_roots:
+        if not root_str:
+            continue
+        p = Path(root_str)
+        if not p.is_absolute():
+            p = primary / p
+        p_resolved = p.resolve()
+        if p_resolved not in roots:
+            roots.append(p_resolved)
+    return roots
+
+
+def resolve_allowed_path(path_str: str | Path, ctx: Optional[Any] = None, workspace_root: Optional[Path] = None) -> tuple[Optional[Path], bool]:
+    """
+    Resolve a given path (relative or absolute) and check if it is within authorized roots
+    and not blocked by denied_paths.
+    
+    Args:
+        path_str: The path to check (relative to primary workspace or absolute).
+        ctx: Optional FSM context.
+        workspace_root: Optional workspace root.
+
+    Returns:
+        tuple (resolved_path, is_allowed):
+          - resolved_path: The resolved Path object.
+          - is_allowed: True if path is within primary workspace or any allowed_roots,
+                        AND does not match any denied_paths. False otherwise.
+    """
+    import fnmatch
+
+    if workspace_root is None:
+        workspace_root = _get_workspace_root(ctx)
+    
+    p = Path(path_str)
+    if not p.is_absolute():
+        resolved = (workspace_root / p).resolve()
+    else:
+        resolved = p.resolve()
+
+    allowed_roots = get_allowed_roots(ctx=ctx, workspace_root=workspace_root)
+    is_within_roots = any(resolved.is_relative_to(root) for root in allowed_roots)
+    if not is_within_roots:
+        return resolved, False
+
+    # Check hard access deny list
+    cfg = load_functions_config(ctx=ctx)
+    if cfg.denied_paths:
+        resolved_str = str(resolved).replace("\\", "/")
+        file_name = resolved.name
+        for pattern in cfg.denied_paths:
+            norm_pattern = pattern.replace("\\", "/").rstrip("/")
+            # Check matching filename or path pattern (e.g. "*.env", ".env*", "secrets/*")
+            if fnmatch.fnmatch(file_name, norm_pattern):
+                return resolved, False
+            if fnmatch.fnmatch(resolved_str, f"*/{norm_pattern}") or fnmatch.fnmatch(resolved_str, f"*/{norm_pattern}/*"):
+                return resolved, False
+            # Check relative to each root
+            for root in allowed_roots:
+                if resolved.is_relative_to(root):
+                    rel = str(resolved.relative_to(root)).replace("\\", "/")
+                    if fnmatch.fnmatch(rel, norm_pattern) or fnmatch.fnmatch(rel, f"{norm_pattern}/*"):
+                        return resolved, False
+
+    return resolved, True
 
 
 def get_insight_config(config_path: Optional[Path] = None) -> dict:

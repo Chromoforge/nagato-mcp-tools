@@ -485,6 +485,15 @@ Here's a full `.nagato/functions_config.json` showing all available options:
 
 ```json
 {
+  "allowed_roots": [
+    "C:/Users/username/PycharmProjects/OtherProject",
+    "../external-shared-lib"
+  ],
+  "denied_paths": [
+    ".env*",
+    "secrets/*",
+    "*.pem"
+  ],
   "tool_filtering": {
     "denied_tools": ["nagato_shell", "nagato_upload"],
     "allowed_categories": ["READ", "SEARCH", "EXECUTE", "EDIT"],
@@ -550,6 +559,8 @@ Here's a full `.nagato/functions_config.json` showing all available options:
 ```
 
 **Key Points:**
+- **`allowed_roots`** — Whitelist of additional directories/repositories permitted for file read/edit/search tools (supports absolute paths or paths relative to `--workspace`)
+- **`denied_paths`** — Explicit blacklist of glob patterns (e.g. `[".env*", "secrets/*", "*.pem"]`) forbidden from read, edit, or delete operations regardless of root
 - **`tool_filtering`** — Controls which tools are available (see [Tool Filtering](#-tool-filtering))
 - **`insight`** — Enables the knowledge graph (requires `[semantic]` extra)
 - **`semantic_search`** — Vector search configuration for local codebase symbols and chunks

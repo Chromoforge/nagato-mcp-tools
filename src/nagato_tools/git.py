@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from nagato_tools.config import get_workspace_root
 from nagato_tools.errors import _nagato_error as nagato_error
+from nagato_tools.config import resolve_allowed_path
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
@@ -90,22 +91,20 @@ async def nagato_git(command: str, args: str = "", _ctx: Optional[Any] = None) -
                 )
             ref, path = parts[0].strip(), parts[1].strip()
             workspace_root = _get_workspace_root(_ctx)
-            target_path = workspace_root / path
-            resolved = target_path.resolve()
-            if not resolved.is_relative_to(workspace_root.resolve()):
+            target_path, is_allowed = resolve_allowed_path(path, ctx=_ctx, workspace_root=workspace_root)
+            if not is_allowed:
                 return nagato_error(f"Path {path} resolves outside workspace root.", tool="nagato_git")
-            return _run(["checkout", ref, "--", path])
+            return _run(["checkout", ref, "--", str(target_path)])
 
         if command == "reset_file":
             path = args.strip()
             if not path:
                 return nagato_error("args must contain the file path.", tool="nagato_git")
             workspace_root = _get_workspace_root(_ctx)
-            target_path = workspace_root / path
-            resolved = target_path.resolve()
-            if not resolved.is_relative_to(workspace_root.resolve()):
+            target_path, is_allowed = resolve_allowed_path(path, ctx=_ctx, workspace_root=workspace_root)
+            if not is_allowed:
                 return nagato_error(f"Path {path} resolves outside workspace root.", tool="nagato_git")
-            return _run(["checkout", "HEAD", "--", path])
+            return _run(["checkout", "HEAD", "--", str(target_path)])
 
         return nagato_error(
             f"Unknown command '{command}'. Allowed: log, status, diff, revert, checkout_file, reset_file",
