@@ -240,15 +240,11 @@ def _has_embedding_support() -> bool:
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
-    """Get workspace root from context or fall back to current working directory."""
+    """Get workspace root from context or fall back to config_paths."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
         return ctx.workspace_root
-    return get_workspace_root()
-
-
-def get_workspace_root() -> Path:
-    """Get the workspace root directory (current working directory as fallback)."""
-    return Path.cwd()
+    from nagato_tools.config import get_workspace_root as config_get_workspace_root
+    return config_get_workspace_root()
 
 
 def _normalize_window(start_offset: int, limit: int) -> tuple[int, int]:
@@ -345,6 +341,11 @@ class SemanticIndexSearch:
         if db_path is None:
             db_path = self.db_path
         self.db_path = db_path
+        
+        # Ensure the database directory exists
+        db_file = Path(self.db_path)
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        
         self.conn = sqlite3.connect(self.db_path)
         
         # Load sqlite-vec extension if available AND embedding backend is functional

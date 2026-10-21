@@ -25,11 +25,11 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -49,27 +49,72 @@ MAX_SEARCH_LIMIT = 20
 # RRF constant (standard value from literature)
 RRF_K = 60
 
+# FTS5 special characters that need escaping
+_FTS5_SPECIAL_CHARS = set('"*()+-:<>@')
+
+# Allowed domains for external API calls (SSRF protection)
+_ALLOWED_API_DOMAINS = {
+    "en.wikipedia.org",
+    "de.wikipedia.org",
+    "wikimedia.org",
+}
+
+# Thread safety locks for global mutable state
+_embedder_lock = threading.Lock()
+_usearch_lock = threading.Lock()
+
+def _sanitize_fts5_query(query: str) -> str:
+    """
+    Sanitize user query for FTS5 MATCH operator.
+    Escapes special characters that could alter query semantics.
+    """
+    if not query:
+        return ""
+    # Escape double quotes by doubling them (FTS5 phrase syntax)
+    # Escape other special chars by wrapping in quotes
+    result = []
+    for char in query:
+        if char == '"':
+            result.append('""')
+        elif char in _FTS5_SPECIAL_CHARS:
+            result.append(f'"{char}"')
+        else:
+            result.append(char)
+    return ''.join(result)
+
+
+def _validate_api_url(url: str) -> bool:
+    """
+    Validate that URL is from an allowed domain (SSRF protection).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return parsed.netloc.lower() in _ALLOWED_API_DOMAINS
+    except Exception:
+        return False
+
+
 _wikipedia_embedder = None
 _usearch_index = None
 _usearch_index_path = None
 _chunk_id_map = None  # Maps usearch internal IDs to SQLite section IDs
 
 
-def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
+def _get_workspace_root(ctx: Any | None = None) -> Path:
     """Get workspace root from context or fall back to central config."""
     if ctx is not None and hasattr(ctx, "workspace_root"):
         return Path(ctx.workspace_root)
     return get_workspace_root()
 
 
-def _get_context(ctx: Optional[Any] = None) -> Any:
+def _get_context(ctx: Any | None = None) -> Any:
     """Get context from injected parameter or fall back to mock."""
     if ctx is not None:
         return ctx
     return get_mock_context(_get_workspace_root(ctx))
 
 
-def _get_context_token_limit(ctx: Any, default: Optional[int] = None) -> int:
+def _get_context_token_limit(ctx: Any, default: int | None = None) -> int:
     """Get token limit from context or use cascading config default for 'wikipedia' / 'read' category."""
     max_context_size = getattr(ctx, "MaxContextSize", None)
     if isinstance(max_context_size, int) and max_context_size > 0:
@@ -110,7 +155,7 @@ def _truncate_to_token_limit(text: str, max_tokens: int | None = None, ctx: Any 
     return prefix + marker
 
 
-def get_wikipedia_db_path(ctx: Optional[Any] = None) -> Path:
+def get_wikipedia_db_path(ctx: Any | None = None) -> Path:
     """Resolve the SQLite database path for Wikipedia data."""
     try:
         from nagato_tools.config import load_functions_config
@@ -119,7 +164,13 @@ def get_wikipedia_db_path(ctx: Optional[Any] = None) -> Path:
         if wp_cfg and getattr(wp_cfg, "db_path", None):
             custom_path = Path(wp_cfg.db_path)
             if not custom_path.is_absolute():
-                return _get_workspace_root(ctx) / custom_path
+                custom_path = _get_workspace_root(ctx) / custom_path
+            # Security: Ensure resolved path is within workspace or user directory
+            custom_path = custom_path.resolve()
+            workspace_root = _get_workspace_root(ctx).resolve()
+            user_nagato = (Path.home() / ".nagato").resolve()
+            if not (custom_path.is_relative_to(workspace_root) or custom_path.is_relative_to(user_nagato)):
+                raise ValueError(f"Database path must be within workspace or ~/.nagato, got: {custom_path}")
             return custom_path
     except Exception as exc:
         logger.debug("Falling back to default db path: %s", exc)
@@ -130,171 +181,176 @@ def get_wikipedia_db_path(ctx: Optional[Any] = None) -> Path:
     return base_dir / "hybrid.db"
 
 
-def get_usearch_index_path(ctx: Optional[Any] = None) -> Path:
+def get_usearch_index_path(ctx: Any | None = None) -> Path:
     """Resolve the USearch index file path."""
     db_path = get_wikipedia_db_path(ctx)
     return db_path.parent / "wiki_usearch.index"
 
 
 def _get_embedder(model_name: str = DEFAULT_WIKIPEDIA_MODEL):
-    """Lazy load FastEmbed embedding model instance for Wikipedia."""
+    """Lazy load FastEmbed embedding model instance for Wikipedia (thread-safe)."""
     global _wikipedia_embedder
     if _wikipedia_embedder is None:
-        try:
-            from fastembed import TextEmbedding
-            try:
-                _wikipedia_embedder = TextEmbedding(
-                    model_name=model_name,
-                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                    max_length=2048,
-                )
-            except Exception:
-                _wikipedia_embedder = TextEmbedding(
-                    model_name=model_name,
-                    providers=["CPUExecutionProvider"],
-                    max_length=2048,
-                )
-        except ImportError:
-            _wikipedia_embedder = None
+        with _embedder_lock:
+            # Double-checked locking pattern
+            if _wikipedia_embedder is None:
+                try:
+                    from fastembed import TextEmbedding
+                    try:
+                        _wikipedia_embedder = TextEmbedding(
+                            model_name=model_name,
+                            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                            max_length=2048,
+                        )
+                    except Exception:
+                        _wikipedia_embedder = TextEmbedding(
+                            model_name=model_name,
+                            providers=["CPUExecutionProvider"],
+                            max_length=2048,
+                        )
+                except ImportError:
+                    _wikipedia_embedder = None
     return _wikipedia_embedder
 
 
 def _load_usearch_index(index_path: Path) -> tuple[Any, np.ndarray]:
-    """Load USearch index and chunk_id mapping from disk."""
+    """Load USearch index and chunk_id mapping from disk (thread-safe)."""
     global _usearch_index, _chunk_id_map, _usearch_index_path
-    
-    if _usearch_index is not None and _usearch_index_path == index_path:
+
+    with _usearch_lock:
+        if _usearch_index is not None and _usearch_index_path == index_path:
+            return _usearch_index, _chunk_id_map
+
+        if not index_path.exists():
+            raise FileNotFoundError(f"USearch index not found at {index_path}. Run build_usearch_index() first.")
+
+        logger.info(f"Loading USearch index from {index_path}...")
+        import usearch.index
+        _usearch_index = usearch.index.Index(
+            ndim=DEFAULT_WIKIPEDIA_DIMENSION,
+            metric=usearch.index.MetricKind.Cos,
+            dtype=usearch.index.ScalarKind.F32,
+        )
+        _usearch_index.load(str(index_path))
+        logger.info(f"USearch index loaded (size={_usearch_index.size})")
+
+        # Load chunk_id mapping
+        map_path = index_path.with_suffix('.npy')
+        if map_path.exists():
+            _chunk_id_map = np.load(map_path)
+            logger.info(f"Loaded chunk_id map: {len(_chunk_id_map)} entries")
+        else:
+            # Fallback: assume sequential mapping
+            _chunk_id_map = np.arange(_usearch_index.size, dtype=np.int64)
+            logger.warning("No chunk_id map found, assuming sequential mapping")
+
+        _usearch_index_path = index_path
+
         return _usearch_index, _chunk_id_map
-    
-    if not index_path.exists():
-        raise FileNotFoundError(f"USearch index not found at {index_path}. Run build_usearch_index() first.")
-    
-    logger.info(f"Loading USearch index from {index_path}...")
-    import usearch.index
-    _usearch_index = usearch.index.Index(
-        ndim=DEFAULT_WIKIPEDIA_DIMENSION,
-        metric=usearch.index.MetricKind.Cos,
-        dtype=usearch.index.ScalarKind.F32,
-    )
-    _usearch_index.load(str(index_path))
-    logger.info(f"USearch index loaded (size={_usearch_index.size})")
-    
-    # Load chunk_id mapping
-    map_path = index_path.with_suffix('.npy')
-    if map_path.exists():
-        _chunk_id_map = np.load(map_path)
-        logger.info(f"Loaded chunk_id map: {len(_chunk_id_map)} entries")
-    else:
-        # Fallback: assume sequential mapping
-        _chunk_id_map = np.arange(_usearch_index.size, dtype=np.int64)
-        logger.warning("No chunk_id map found, assuming sequential mapping")
-    
-    _usearch_index_path = index_path
-    
-    return _usearch_index, _chunk_id_map
 
 
 def _build_usearch_index(db_path: Path, index_path: Path, batch_size: int = 100000) -> None:
-    """Build USearch HNSW index from SQLite section embeddings."""
+    """Build USearch HNSW index from SQLite section embeddings (thread-safe)."""
     global _usearch_index, _chunk_id_map
-    
-    logger.info(f"Building USearch index from {db_path}...")
-    import time
-    start = time.time()
-    
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-    
-    # Get total count of sections with embeddings
-    total = cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL").fetchone()[0]
-    logger.info(f"Total sections with embeddings to index: {total:,}")
-    
-    if total == 0:
-        logger.warning("No sections with embeddings found, skipping index build")
-        conn.close()
-        return
-    
-    # Create USearch index
-    import usearch.index
-    _usearch_index = usearch.index.Index(
-        ndim=DEFAULT_WIKIPEDIA_DIMENSION,
-        metric=usearch.index.MetricKind.Cos,
-        dtype=usearch.index.ScalarKind.F32,
-    )
-    
-    # Pre-allocate chunk_id map
-    _chunk_id_map = np.empty(total, dtype=np.int64)
-    
-    # Process in batches
-    offset = 0
-    vectors_added = 0
-    
-    while offset < total:
-        cursor.execute(
-            "SELECT id, embedding FROM wiki_sections WHERE embedding IS NOT NULL LIMIT ? OFFSET ?",
-            (batch_size, offset)
+
+    with _usearch_lock:
+        logger.info(f"Building USearch index from {db_path}...")
+        import time
+        start = time.time()
+
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        # Get total count of sections with embeddings
+        total = cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL").fetchone()[0]
+        logger.info(f"Total sections with embeddings to index: {total:,}")
+
+        if total == 0:
+            logger.warning("No sections with embeddings found, skipping index build")
+            conn.close()
+            return
+
+        # Create USearch index
+        import usearch.index
+        _usearch_index = usearch.index.Index(
+            ndim=DEFAULT_WIKIPEDIA_DIMENSION,
+            metric=usearch.index.MetricKind.Cos,
+            dtype=usearch.index.ScalarKind.F32,
         )
-        rows = cursor.fetchall()
-        
-        if not rows:
-            break
-        
-        # Prepare batch
-        batch_size_actual = len(rows)
-        vectors = np.empty((batch_size_actual, DEFAULT_WIKIPEDIA_DIMENSION), dtype=np.float32)
-        section_ids = np.empty(batch_size_actual, dtype=np.int64)
-        
-        for i, (section_id, vec_blob) in enumerate(rows):
-            vectors[i] = np.frombuffer(vec_blob, dtype=np.float32)
-            section_ids[i] = section_id
-        
-        # Add to USearch index (keys are sequential integers)
-        keys = np.arange(vectors_added, vectors_added + batch_size_actual, dtype=np.int64)
-        _usearch_index.add(keys, vectors)
-        _chunk_id_map[vectors_added:vectors_added + batch_size_actual] = section_ids
-        vectors_added += batch_size_actual
-        
-        offset += batch_size
-        elapsed = time.time() - start
-        rate = vectors_added / elapsed if elapsed > 0 else 0
-        logger.info(f"  Indexed {vectors_added:,}/{total:,} vectors ({rate:.0f} vec/s)")
-    
-    conn.close()
-    
-    # Save index and mapping
-    logger.info(f"Saving USearch index to {index_path}...")
-    _usearch_index.save(str(index_path))
-    
-    map_path = index_path.with_suffix('.npy')
-    np.save(map_path, _chunk_id_map)
-    
-    total_time = time.time() - start
-    logger.info(f"USearch index built in {total_time:.1f}s ({vectors_added:,} vectors)")
+
+        # Pre-allocate chunk_id map
+        _chunk_id_map = np.empty(total, dtype=np.int64)
+
+        # Process in batches
+        offset = 0
+        vectors_added = 0
+
+        while offset < total:
+            cursor.execute(
+                "SELECT id, embedding FROM wiki_sections WHERE embedding IS NOT NULL LIMIT ? OFFSET ?",
+                (batch_size, offset)
+            )
+            rows = cursor.fetchall()
+
+            if not rows:
+                break
+
+            # Prepare batch
+            batch_size_actual = len(rows)
+            vectors = np.empty((batch_size_actual, DEFAULT_WIKIPEDIA_DIMENSION), dtype=np.float32)
+            section_ids = np.empty(batch_size_actual, dtype=np.int64)
+
+            for i, (section_id, vec_blob) in enumerate(rows):
+                vectors[i] = np.frombuffer(vec_blob, dtype=np.float32)
+                section_ids[i] = section_id
+
+            # Add to USearch index (keys are sequential integers)
+            keys = np.arange(vectors_added, vectors_added + batch_size_actual, dtype=np.int64)
+            _usearch_index.add(keys, vectors)
+            _chunk_id_map[vectors_added:vectors_added + batch_size_actual] = section_ids
+            vectors_added += batch_size_actual
+
+            offset += batch_size
+            elapsed = time.time() - start
+            rate = vectors_added / elapsed if elapsed > 0 else 0
+            logger.info(f"  Indexed {vectors_added:,}/{total:,} vectors ({rate:.0f} vec/s)")
+
+        conn.close()
+
+        # Save index and mapping
+        logger.info(f"Saving USearch index to {index_path}...")
+        _usearch_index.save(str(index_path))
+
+        map_path = index_path.with_suffix('.npy')
+        np.save(map_path, _chunk_id_map)
+
+        total_time = time.time() - start
+        logger.info(f"USearch index built in {total_time:.1f}s ({vectors_added:,} vectors)")
 
 
-def _ensure_usearch_index(ctx: Optional[Any] = None) -> tuple[Any, np.ndarray]:
+def _ensure_usearch_index(ctx: Any | None = None) -> tuple[Any, np.ndarray]:
     """Ensure USearch index is loaded, building if necessary."""
     db_path = get_wikipedia_db_path(ctx)
     index_path = get_usearch_index_path(ctx)
-    
+
     # Check if there are embeddings to index before building
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM wiki_sections WHERE embedding IS NOT NULL")
     embedding_count = cursor.fetchone()[0]
     conn.close()
-    
+
     if embedding_count == 0:
         raise FileNotFoundError("No embeddings in database to build USearch index")
-    
+
     if not index_path.exists():
         logger.info("USearch index not found, building...")
         _build_usearch_index(db_path, index_path)
-    
+
     return _load_usearch_index(index_path)
 
 
-def get_wikipedia_connection(db_path: Optional[Path] = None, ctx: Optional[Any] = None) -> tuple[sqlite3.Connection, bool]:
+def get_wikipedia_connection(db_path: Path | None = None, ctx: Any | None = None) -> tuple[sqlite3.Connection, bool]:
     """Get or initialize SQLite connection with FTS5 and optional USearch support."""
     if db_path is None:
         db_path = get_wikipedia_db_path(ctx)
@@ -314,7 +370,7 @@ def get_wikipedia_connection(db_path: Optional[Path] = None, ctx: Optional[Any] 
                 last_modified TEXT
             )
         """)
-        
+
         # wiki_sections table (structural sections, no naive chunking)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS wiki_sections (
@@ -328,12 +384,12 @@ def get_wikipedia_connection(db_path: Optional[Path] = None, ctx: Optional[Any] 
                 embedding BLOB  -- 384-dim float32 vector
             )
         """)
-        
+
         # B-Tree indexes for exact lookups
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sections_art_sec ON wiki_sections(article_id, section_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sections_title_sec ON wiki_sections(title, section_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sections_embedding ON wiki_sections(embedding) WHERE embedding IS NOT NULL")
-        
+
         # FTS5 virtual table for BM25 lexical search
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS wiki_sections_fts USING fts5(
@@ -343,7 +399,7 @@ def get_wikipedia_connection(db_path: Optional[Path] = None, ctx: Optional[Any] 
                 tokenize='unicode61 remove_diacritics 2'
             )
         """)
-        
+
         # FTS5 triggers to keep in sync
         conn.execute("""
             CREATE TRIGGER IF NOT EXISTS wiki_sections_ai AFTER INSERT ON wiki_sections BEGIN
@@ -377,11 +433,11 @@ async def nagato_wikipedia_search(
     query: str,
     limit: int = DEFAULT_SEARCH_LIMIT,
     start_offset: int = 0,
-    _ctx: Optional[Any] = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Hybrid Search (BM25 + Dense Vector) with Reciprocal Rank Fusion (RRF).
-    
+
     Step 1 of the Search -> Fetch pattern: searches Wikipedia and returns a
     lightweight preview (titles, sections, snippets) to protect token budget.
 
@@ -422,6 +478,8 @@ async def nagato_wikipedia_search(
 
         # --- BM25 Search via FTS5 ---
         bm25_results = []
+        # Sanitize query for FTS5 MATCH to prevent injection
+        safe_query = _sanitize_fts5_query(normalized_query)
         try:
             cursor.execute(
                 """
@@ -431,7 +489,7 @@ async def nagato_wikipedia_search(
                 ORDER BY score ASC
                 LIMIT 50
                 """,
-                (normalized_query,)
+                (safe_query,)
             )
             bm25_rows = cursor.fetchall()
             bm25_results = [(row[0], row[1]) for row in bm25_rows]  # (section_id, bm25_score)
@@ -455,7 +513,7 @@ async def nagato_wikipedia_search(
                         result_keys = matches.keys
                         result_distances = matches.distances
                         result_section_ids = chunk_id_map[result_keys]
-                        dense_results = list(zip(result_section_ids, result_distances))  # (section_id, cosine_distance)
+                        dense_results = list(zip(result_section_ids, result_distances, strict=False))  # (section_id, cosine_distance)
                 else:
                     logger.debug("No embeddings in database, skipping dense search")
             except Exception as exc:
@@ -465,11 +523,11 @@ async def nagato_wikipedia_search(
         # RRF_score = 1/(k + rank_bm25) + 1/(k + rank_dense)
         # Lower BM25 score = better, lower cosine distance = better
         fused_scores = {}
-        
+
         # Add BM25 ranks
         for rank, (section_id, _) in enumerate(bm25_results):
             fused_scores[section_id] = fused_scores.get(section_id, 0.0) + 1.0 / (RRF_K + rank + 1)
-        
+
         # Add Dense ranks
         for rank, (section_id, _) in enumerate(dense_results):
             fused_scores[section_id] = fused_scores.get(section_id, 0.0) + 1.0 / (RRF_K + rank + 1)
@@ -479,7 +537,7 @@ async def nagato_wikipedia_search(
 
         # Sort by RRF score descending
         sorted_sections = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
-        
+
         # Apply offset and limit
         final_sections = sorted_sections[start_offset:start_offset + bounded_limit]
         result_section_ids = [sid for sid, _ in final_sections]
@@ -497,7 +555,7 @@ async def nagato_wikipedia_search(
             """,
             result_section_ids
         )
-        
+
         # Preserve RRF ranking order
         rows_by_id = {row[0]: row for row in cursor.fetchall()}
         rows = [rows_by_id[sid] for sid in result_section_ids if sid in rows_by_id]
@@ -506,7 +564,7 @@ async def nagato_wikipedia_search(
             return f"No Wikipedia entries found matching '{normalized_query}'."
 
         lines = [f"Wikipedia Hybrid Search Results for '{normalized_query}' ({len(rows)} hits) [RRF]:"]
-        for idx, (section_id, title, section_name, content) in enumerate(rows, start=start_offset + 1):
+        for idx, (_section_id, title, section_name, content) in enumerate(rows, start=start_offset + 1):
             snippet = content[:200].replace("\n", " ").strip()
             section_display = f" -> Section: {section_name}" if section_name and section_name != "__lead__" else ""
             lines.append(f"{idx}. [{title}]{section_display}")
@@ -522,8 +580,8 @@ async def nagato_wikipedia_search(
 
 async def nagato_wikipedia_fetch(
     title: str,
-    section: Optional[str] = None,
-    _ctx: Optional[Any] = None,
+    section: str | None = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Step 2 of the Search -> Fetch pattern: retrieves the complete content
@@ -595,7 +653,7 @@ async def nagato_wikipedia_fetch(
 async def nagato_wikipedia_api_search(
     query: str,
     limit: int = 5,
-    _ctx: Optional[Any] = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Online Wikipedia REST API search fallback. Searches live Wikipedia without
@@ -616,6 +674,9 @@ async def nagato_wikipedia_api_search(
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "NagatoFSM/1.0 (https://github.com/NagatoFSM)"})
+        # SSRF protection: validate URL domain
+        if not _validate_api_url(url):
+            return nagato_error(f"Blocked request to disallowed domain: {url}", tool="nagato_wikipedia_api_search")
         with urllib.request.urlopen(req, timeout=10.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
@@ -628,7 +689,7 @@ async def nagato_wikipedia_api_search(
                 return f"No online Wikipedia results for '{normalized_query}'."
 
             lines = [f"Online Wikipedia results for '{normalized_query}':"]
-            for i, (t, desc, u) in enumerate(zip(titles, descriptions, urls), start=1):
+            for i, (t, desc, u) in enumerate(zip(titles, descriptions, urls, strict=False), start=1):
                 lines.append(f"{i}. {t}")
                 lines.append(f"   URL: {u}")
                 if desc:
@@ -641,7 +702,7 @@ async def nagato_wikipedia_api_search(
         return nagato_error(f"Online Wikipedia API request failed: {exc}", tool="nagato_wikipedia_api_search")
 
 
-def nagato_wikipedia_init(_ctx: Optional[Any] = None) -> str:
+def nagato_wikipedia_init(_ctx: Any | None = None) -> str:
     """
     Initializes the local Wikipedia SQLite schema (FTS5 + structural sections).
     Safe and idempotent to call anytime.
@@ -650,11 +711,11 @@ def nagato_wikipedia_init(_ctx: Optional[Any] = None) -> str:
     try:
         conn, _ = get_wikipedia_connection(db_path, _ctx)
         conn.close()
-        
+
         # Check USearch index
         index_path = get_usearch_index_path(_ctx)
         usearch_status = "READY" if index_path.exists() else "NOT BUILT (run build_usearch_index)"
-        
+
         return (
             f"Wikipedia database initialized at: {db_path}\n"
             f"Lexical Search: FTS5 BM25 (always available)\n"
@@ -665,13 +726,13 @@ def nagato_wikipedia_init(_ctx: Optional[Any] = None) -> str:
         return nagato_error(f"Initialization failed: {exc}", tool="nagato_wikipedia_init")
 
 
-def nagato_wikipedia_status(_ctx: Optional[Any] = None) -> str:
+def nagato_wikipedia_status(_ctx: Any | None = None) -> str:
     """
     Returns statistics and status of the local Wikipedia database and USearch index.
     """
     db_path = get_wikipedia_db_path(_ctx)
     index_path = get_usearch_index_path(_ctx)
-    
+
     if not db_path.exists():
         return f"No Wikipedia database found at {db_path}."
 
@@ -685,7 +746,7 @@ def nagato_wikipedia_status(_ctx: Optional[Any] = None) -> str:
         conn.close()
 
         size_mb = db_path.stat().st_size / (1024 * 1024)
-        
+
         # USearch index info
         usearch_info = ""
         if index_path.exists():
@@ -718,17 +779,17 @@ def nagato_wikipedia_status(_ctx: Optional[Any] = None) -> str:
         return nagato_error(f"Status check failed: {exc}", tool="nagato_wikipedia_status")
 
 
-def nagato_build_usearch_index(_ctx: Optional[Any] = None) -> str:
+def nagato_build_usearch_index(_ctx: Any | None = None) -> str:
     """
     Builds the USearch HNSW index from the SQLite section embeddings.
     This is a one-time operation (or run after new data ingestion).
     """
     db_path = get_wikipedia_db_path(_ctx)
     index_path = get_usearch_index_path(_ctx)
-    
+
     if not db_path.exists():
         return nagato_error(f"Wikipedia database not found at {db_path}.", tool="nagato_build_usearch_index")
-    
+
     try:
         _build_usearch_index(db_path, index_path)
         index_size_mb = index_path.stat().st_size / (1024 * 1024)

@@ -144,13 +144,21 @@ def list_registered_workspaces(only_existing: bool = True) -> List[Dict[str, Any
 def is_workspace_allowed(
     workspace_root: Path | str,
     fallback_workspace: Optional[Path] = None,
+    transport: str = "http",  # "http", "websocket", "stdio"
 ) -> bool:
     """Validate whether the given workspace_root is allowed to be accessed.
     
-    Allowed if:
+    For stdio transport (MCP): Always allow - process boundary provides isolation.
+    For http/websocket transports: Enforce registry check.
+    
+    Allowed if (http/websocket only):
     1. Equals or is relative to the server's default/fallback workspace
     2. Exactly matches or is inside any path registered in ~/.nagato/workspaces.json
     """
+    # stdio transport: process-per-workspace = isolation, no registry needed
+    if transport == "stdio":
+        return True
+    
     target = Path(workspace_root).resolve()
 
     if fallback_workspace:

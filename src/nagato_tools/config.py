@@ -18,15 +18,11 @@ DEFAULT_IGNORED_DIRS = (
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
-    """Get workspace root from context or fall back to current working directory."""
+    """Get workspace root from context or fall back to config_paths."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
         return ctx.workspace_root
-    return get_workspace_root()
-
-
-def get_workspace_root() -> Path:
-    """Get the workspace root directory (current working directory as fallback)."""
-    return Path.cwd()
+    from nagato_tools.config import get_workspace_root as config_get_workspace_root
+    return config_get_workspace_root()
 
 
 @dataclass
@@ -107,8 +103,9 @@ class FunctionsConfig:
         "web": 4000
     })
     tool_filtering: dict = field(default_factory=lambda: {
+        "enforce_insight_only": False,  # Insight is opt-in for standalone; only true when --include-insight used
         "denied_tools": ["nagato_shell", "nagato_upload", "nagato_is_agent_running"]
-    })  # allowed_tools, denied_tools, allowed_categories
+    })  # allowed_tools, denied_tools, allowed_categories, enforce_insight_only
     allowed_roots: list[str] = field(default_factory=list)  # Whitelist of additional workspace roots/directories
     denied_paths: list[str] = field(default_factory=list)  # Hard access blocklist (e.g. [".env", "secrets/"])
 
@@ -480,27 +477,43 @@ def is_force_insight_enabled() -> bool:
 
 def get_standalone_config() -> dict:
     """
-    Get the standalone mode tool filtering configuration from YAML config.
+    Get the standalone mode tool filtering configuration.
     
-    Loads from .nagato/standalone.yaml (separate file for security isolation).
+    Loads from .nagato/standalone.yaml (separate file for security isolation)
+    and merges with tool_filtering from .nagato/functions_config.json.
     
     Returns a dict with keys:
     - allowed_tools: List[str] — allowlist of tool names (e.g., ["nagato_read_file"])
     - denied_tools: List[str] — denylist of tool names (e.g., ["nagato_shell"])
     - allowed_categories: List[str] — category-level allowlist (e.g., ["READ", "SEARCH"])
+    - enforce_insight_only: bool — If true, only Node-ID-based tools are registered
     
     All keys are optional. Empty dict means no filtering.
     """
-    # Load from separate standalone config file
+    config = {}
+    
+    # Load from separate standalone config file (legacy)
     standalone_path = get_workspace_root() / ".nagato" / "standalone.yaml"
     if standalone_path.exists():
         try:
             import yaml
             with standalone_path.open("r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+                config.update(yaml.safe_load(f) or {})
         except Exception:
             pass
-    return {}
+    
+    # Load tool_filtering from functions_config.json (new, takes precedence)
+    functions_config_path = get_workspace_root() / ".nagato" / "functions_config.json"
+    if functions_config_path.exists():
+        try:
+            with functions_config_path.open("r", encoding="utf-8") as f:
+                functions_config = json.load(f)
+                if "tool_filtering" in functions_config and isinstance(functions_config["tool_filtering"], dict):
+                    config.update(functions_config["tool_filtering"])
+        except Exception:
+            pass
+    
+    return config
 
 
 def is_forced_insight_trigger(tool_name: str, category_name: Optional[str] = None) -> bool:
@@ -762,6 +775,7 @@ def get_standalone_config() -> dict:
     Loads from .nagato/functions_config.json under the 'tool_filtering' key.
     
     Returns a dict with keys:
+    - enforce_insight_only: bool — If true, only Node-ID-based tools are registered (hard switch)
     - allowed_tools: List[str] — allowlist of tool names (e.g., ["nagato_read_file"])
     - denied_tools: List[str] — denylist of tool names (e.g., ["nagato_shell"])
     - allowed_categories: List[str] — category-level allowlist (e.g., ["READ", "SEARCH"])

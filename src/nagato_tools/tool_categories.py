@@ -180,6 +180,7 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
             "nagato_insights_search", "nagato_sync_ast_to_insight", "nagato_unified_search",
             "nagato_drift_report", "nagato_impact_analysis", "nagato_block_save",
             "nagato_block_load", "nagato_block_list", "nagato_block_delete",
+            "nagato_block_export", "nagato_block_import",
             "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm",
             "nagato_register_protocol", "nagato_link_implementation", "nagato_query_imports",
             "nagato_query_deletion_history", "nagato_query_algorithm_implementations",

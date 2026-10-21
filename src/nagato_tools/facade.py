@@ -24,6 +24,31 @@ except ImportError:
 
 from nagato_tools.ctx_mock import MockFSMContext, get_mock_context, _resolve_session_id
 from nagato_tools.tool_categories import ToolCategory
+from nagato_tools.config import get_workspace_root as config_get_workspace_root
+
+
+# Insight-only mode tool sets (Plan 0.26)
+# When enforce_insight_only=true, these tools are auto-configured
+INSIGHT_ONLY_DENIED_TOOLS: Set[str] = {
+    "nagato_read_file", "nagato_read_lines", "nagato_read_signatures",
+    "nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_write_plan",
+    "nagato_searchInFile", "nagato_searchInFiles", "nagato_searchAST",
+    "nagato_list_dir", "nagato_find_file"
+}
+
+INSIGHT_ONLY_ALLOWED_TOOLS: Set[str] = {
+    "nagato_read_node", "nagato_read_node_signatures",
+    "nagato_edit_node", "nagato_edit_node_lines", "nagato_delete_node", "nagato_write_plan_node",
+    "nagato_search_node", "nagato_search_node_ast",
+    "nagato_list_node_children", "nagato_find_node",
+    "nagato_search_concept", "nagato_insights_search", "nagato_unified_search",
+    "nagato_view_radar", "nagato_concept_create", "nagato_concept_link", "nagato_concept_batch",
+    "nagato_concept_collapse", "nagato_concept_expand",
+    "nagato_block_save", "nagato_block_load", "nagato_block_list", "nagato_block_delete",
+    "nagato_insight_promote_to_global",
+    "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation",
+    "nagato_query_imports", "nagato_query_deletion_history", "nagato_query_algorithm_implementations"
+}
 
 
 class ToolFacade:
@@ -53,7 +78,7 @@ class ToolFacade:
         
         Args:
             fsm_instance: Optional NagatoFSM instance. If provided, uses its Context.
-            workspace_root: Workspace root path. Defaults to repo root.
+            workspace_root: Workspace root path. Defaults to config_paths.get_workspace_root().
             mock_context: Optional custom MockFSMContext. Created if not provided.
             session_id: Optional session ID for standalone mode. If not provided,
                        resolves from NAGATO_SESSION_ID env var or defaults to "standalone".
@@ -66,7 +91,7 @@ class ToolFacade:
                                Only tools from these categories will be registered.
         """
         self._fsm = fsm_instance
-        self._workspace_root = Path(workspace_root) if workspace_root is not None else Path(__file__).parents[1]
+        self._workspace_root = Path(workspace_root) if workspace_root is not None else config_get_workspace_root()
         
         # Resolve session_id for standalone mode
         resolved_session_id = _resolve_session_id(session_id) if fsm_instance is None else None
@@ -82,10 +107,18 @@ class ToolFacade:
         self._tool_modules: Dict[str, str] = {}  # tool_name -> module_name
         
         # Tool filtering config (only for standalone mode)
-        self._filter_allowed_tools: Set[str] = set(allowed_tools) if allowed_tools else set()
-        self._filter_denied_tools: Set[str] = set(denied_tools) if denied_tools else set()
-        self._filter_allowed_categories: Set[ToolCategory] = set(allowed_categories) if allowed_categories else set()
+        # Use None to detect explicit vs default - empty set means explicitly empty
+        self._filter_allowed_tools: Set[str] = allowed_tools if allowed_tools is not None else set()
+        self._filter_denied_tools: Set[str] = denied_tools if denied_tools is not None else set()
+        self._filter_allowed_categories: Set[ToolCategory] = set(allowed_categories) if allowed_categories is not None else set()
         self._filter_config_loaded: bool = False
+        
+        # Track whether explicit filters were provided (vs defaults)
+        self._explicit_filters_provided = (
+            allowed_tools is not None or 
+            denied_tools is not None or 
+            allowed_categories is not None
+        )
         
         self._bootstrap_workspace()
         self._build_registry()
@@ -156,15 +189,23 @@ class ToolFacade:
             return  # Only for standalone mode, and only once
         
         # Only load config if no explicit filters were provided
-        if not self._filter_allowed_tools and not self._filter_denied_tools and not self._filter_allowed_categories:
+        if not self._explicit_filters_provided:
             try:
                 from nagato_tools.config import get_standalone_config
                 config = get_standalone_config()
                 if config:
-                    if "allowed_tools" in config:
-                        self._filter_allowed_tools = set(config["allowed_tools"])
-                    if "denied_tools" in config:
-                        self._filter_denied_tools = set(config["denied_tools"])
+                    # Check for enforce_insight_only flag (Plan 0.26)
+                    if config.get("enforce_insight_only", False):
+                        # Auto-populate with Insight-only tool sets
+                        self._filter_denied_tools.update(INSIGHT_ONLY_DENIED_TOOLS)
+                        self._filter_allowed_tools.update(INSIGHT_ONLY_ALLOWED_TOOLS)
+                    else:
+                        # Legacy behavior: explicit lists
+                        if "allowed_tools" in config:
+                            self._filter_allowed_tools = set(config["allowed_tools"])
+                        if "denied_tools" in config:
+                            self._filter_denied_tools = set(config["denied_tools"])
+                    
                     if "allowed_categories" in config:
                         # Convert string category names to ToolCategory enums
                         for cat_str in config["allowed_categories"]:
@@ -203,6 +244,7 @@ class ToolFacade:
             'wikipedia': ToolCategory.WIKIPEDIA,
             'law': ToolCategory.LAW,
             'finalize_handler': ToolCategory.FINALIZE,
+            'insight.tools': ToolCategory.INSIGHT,
         }
         return module_to_category.get(module_name)
     
@@ -401,7 +443,7 @@ class ToolFacade:
         result = None
         action_ctx = None
         if self._fsm is None and getattr(self.context, "active_action", None) is None:
-            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_batch", "nagato_concept_link", "nagato_concept_collapse", "nagato_concept_expand", "nagato_block_save", "nagato_block_delete", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
+            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_batch", "nagato_concept_link", "nagato_concept_collapse", "nagato_concept_expand", "nagato_block_save", "nagato_block_delete", "nagato_block_import", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
                 try:
                     from nagato_tools.action_journal import ActionJournal
                     sess_id = getattr(self.context, "session_id", "standalone")
@@ -496,7 +538,7 @@ class ToolFacade:
         result = None
         action_ctx = None
         if self._fsm is None and getattr(self.context, "active_action", None) is None:
-            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_batch", "nagato_concept_link", "nagato_concept_collapse", "nagato_concept_expand", "nagato_block_save", "nagato_block_delete", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
+            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_concept_create", "nagato_concept_batch", "nagato_concept_link", "nagato_concept_collapse", "nagato_concept_expand", "nagato_block_save", "nagato_block_delete", "nagato_block_import", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
                 try:
                     from nagato_tools.action_journal import ActionJournal
                     sess_id = getattr(self.context, "session_id", "standalone")

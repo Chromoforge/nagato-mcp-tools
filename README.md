@@ -272,9 +272,9 @@ The instructions guide the LLM to:
 
 | Layer | Purpose | Standalone Initialization | Auto-Reindex? |
 |-------|---------|---------------------------|---------------|
-| **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | ❌ Manual only |
+| **Symbol DB** | AST signatures + callgraph for `read_signatures`, `extract_callers`, `extract_callees` | `nagato_rebuild_symbol_db(dir=".")` | 🔄 Post-Edit hook keeps edited files in sync |
 | **Semantic Search** | Vector embeddings for `semantic_search` | `nagato_set_semantic_search_root(path=".")` (sets root + immediate reindex) | ✅ Auto on every `semantic_search` call |
-| **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | ❌ Manual only |
+| **Insight Graph** | Knowledge graph for `view_radar`, `impact_analysis`, `unified_search` | `nagato_sync_ast_to_insight(mode="full")` (session) or `nagato_insight_bootstrap(mode="full")` (global CLI) | 🔄 Post-Edit background sync when Insight enabled |
 
 **Combined Single-Pass Sync** (eliminates duplicate AST parsing — updates both Semantic Index AND Insight Graph in one atomic operation):
 | Tool | Scope | Use Case |
@@ -301,8 +301,6 @@ nagato-ui --workspace /path/to/target-project --port 8080 --open-browser
 > **Crucial — Matching `--workspace`**:
 > The WebUI dashboard loads telemetry and audit logs from the project directory specified in `--workspace`.
 > Ensure that the `--workspace` parameter given to `nagato-ui` matches the `--workspace` path configured in your MCP client (`mcp.json`). If they do not match, the WebUI will monitor a different directory.
->
-> *(Note: If you run the full FSM runtime via `python -m fsm.api.server`, it also accepts `--workspace /path/to/target-project` or the `$env:NAGATO_WORKSPACE_ROOT` environment variable).*
 
 ### Features
 - 📊 **Real-Time Audit Stream**: Live WebSocket event stream of tool dispatches, execution durations, and payloads.

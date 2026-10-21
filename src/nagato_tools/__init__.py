@@ -28,6 +28,7 @@ from .wikipedia import *
 from .law import *
 from ._post_edit_safety import *
 from .input_repair import *
+from .insight_io import *
 
 # Facade for unified access
 from .facade import ToolFacade, get_tool_facade
@@ -80,6 +81,16 @@ __all__ = [
     "nagato_law_search",
     "nagato_law_fetch",
     "nagato_law_compare_models",
+    "nagato_read_node",
+    "nagato_read_node_signatures",
+    "nagato_edit_node",
+    "nagato_edit_node_lines",
+    "nagato_delete_node",
+    "nagato_write_plan_node",
+    "nagato_search_node",
+    "nagato_search_node_ast",
+    "nagato_list_node_children",
+    "nagato_find_node",
     "ToolFacade",
     "get_tool_facade",
 ]

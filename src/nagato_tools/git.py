@@ -9,7 +9,7 @@ from nagato_tools.config import resolve_allowed_path
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
-    """Get workspace root from context or fall back to config."""
+    """Get workspace root from context or fall back to config_paths."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
         return ctx.workspace_root
     return get_workspace_root()

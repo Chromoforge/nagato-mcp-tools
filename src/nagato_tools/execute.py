@@ -9,13 +9,10 @@ from nagato_tools.errors import _nagato_error as nagato_error
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
-    """Get workspace root from context or fall back to config / current working directory."""
+    """Get workspace root from context or fall back to config_paths."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
         return ctx.workspace_root
-    try:
-        return get_workspace_root()
-    except Exception:
-        return Path.cwd()
+    return get_workspace_root()
 
 
 def _resolve_python_executable(workspace_root: Optional[Path] = None) -> str:

@@ -6,20 +6,17 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from nagato_tools.config import get_workspace_root as _config_get_workspace_root
+from nagato_tools.config import get_workspace_root
 from nagato_tools.ctx_mock import get_mock_context
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.lint import nagato_lint
 
 
 def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
-    """Get workspace root from context or fall back to config / current working directory."""
+    """Get workspace root from context or fall back to config_paths."""
     if ctx is not None and hasattr(ctx, 'workspace_root'):
         return ctx.workspace_root
-    try:
-        return _config_get_workspace_root()
-    except Exception:
-        return Path.cwd()
+    return get_workspace_root()
 
 
 # V1 Suite Provider Architecture (optional, for gradual migration)

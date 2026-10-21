@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import Any, Optional
 
-from nagato_tools.config import get_tool_token_limit, get_workspace_root
+from nagato_tools.config import get_tool_token_limit
+from nagato_tools.config import get_workspace_root
 from nagato_tools.ctx_mock import get_mock_context
 from nagato_tools import edit as edit_module
 from nagato_tools.errors import _nagato_error as nagato_error
@@ -348,7 +349,26 @@ def _get_db_path(ctx: Optional[Any] = None) -> str:
         return DB_PATH
     config = get_semantic_search_config()
     workspace_root = _get_workspace_root(ctx)
-    return resolve_db_path(config, workspace_root)
+    db_path = resolve_db_path(config, workspace_root)
+    
+    # Check if database file exists and is valid
+    db_file = Path(db_path)
+    if not db_file.exists():
+        # Try to provide a helpful error message
+        nagato_dir = workspace_root / ".nagato"
+        if not nagato_dir.exists():
+            raise FileNotFoundError(
+                f"Database not found at {db_path}. The .nagato directory does not exist. "
+                f"Run 'nagato_rebuild_symbol_db' to initialize the symbol database, "
+                f"or ensure you're running from the correct workspace root."
+            )
+        else:
+            raise FileNotFoundError(
+                f"Database not found at {db_path}. The .nagato directory exists but the database is missing. "
+                f"Run 'nagato_rebuild_symbol_db' to initialize the symbol database."
+            )
+    
+    return db_path
 
 def nagato_read_signatures(file_path: str = None, target_symbol: str = None, limit: int = 20, start_offset: int = 0, _ctx: Optional[Any] = None) -> str:
     """
@@ -401,6 +421,19 @@ def nagato_read_signatures(file_path: str = None, target_symbol: str = None, lim
             for f_path, sig_text in paged_rows:
                 output.append(f"  In {f_path}:\n    {sig_text}")
             return _truncate_to_token_limit("\n".join(output), ctx=ctx)
+        except FileNotFoundError as e:
+            return nagato_error(str(e), tool="nagato_read_signatures")
+        except sqlite3.DatabaseError as e:
+            error_msg = str(e).lower()
+            if ("invalid start byte" in error_msg or "utf-8" in error_msg or 
+                "file is not a database" in error_msg or "database disk image is malformed" in error_msg):
+                return nagato_error(
+                    f"Database appears corrupted or is not a valid SQLite database. "
+                    f"Run 'nagato_rebuild_symbol_db' to rebuild the symbol database. "
+                    f"Original error: {str(e)}",
+                    tool="nagato_read_signatures"
+                )
+            return nagato_error(f"Global DB query failed: {str(e)}", tool="nagato_read_signatures")
         except Exception as e:
             return nagato_error(f"Global DB query failed: {str(e)}", tool="nagato_read_signatures")
 
@@ -450,6 +483,21 @@ def nagato_read_signatures(file_path: str = None, target_symbol: str = None, lim
                 if radar_alert:
                     return f"{radar_alert}\n\n{res_str}"
                 return res_str
+        except FileNotFoundError as e:
+            # Database doesn't exist - fall through to live AST extraction
+            pass
+        except sqlite3.DatabaseError as e:
+            error_msg = str(e).lower()
+            if ("invalid start byte" in error_msg or "utf-8" in error_msg or 
+                "file is not a database" in error_msg or "database disk image is malformed" in error_msg):
+                return nagato_error(
+                    f"Database appears corrupted or is not a valid SQLite database. "
+                    f"Run 'nagato_rebuild_symbol_db' to rebuild the symbol database. "
+                    f"Original error: {str(e)}",
+                    tool="nagato_read_signatures"
+                )
+            # Other DB errors - fall through to live AST extraction
+            pass
         except Exception:
             pass # If DB fails, we use the live fallback below
             

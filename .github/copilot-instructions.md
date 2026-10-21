@@ -5,13 +5,19 @@ Nagato MCP Tools — Agent Instructions (Standalone Mode)
 # Project Nagato // Nagato MCP Tools — Agent Instructions (Standalone Mode)
 
 ## CRITICAL FIRST ACTION (MANDATORY ON EVERY USER TURN)
-Whatever the user asks (questions, concepts, code analysis, brainstorming, or edits):
-1. **NEVER answer purely from LLM memory.** Do not guess, theorize, or assume project context.
-2. **ALWAYS query project knowledge FIRST** before outputting text:
-   - Concepts / design rationale / general queries: `nagato_unified_search(query=...)`
-   - Architecture / symbol definitions: `nagato_view_radar` or `nagato_read_signatures`
-   - Code logic exploration: `nagato_semantic_search` or `nagato_searchInFiles`
-3. Tool call MUST happen in your first turn. Zero plain-text answers prior to checking project state.
+Project knowledge lives in the symbol and semantic indices — not in your memory and not in the file tree. Directory listings and plain grep see text only.
+
+Your FIRST tool call on every turn (questions, code analysis, brainstorming, edits) MUST come from this table:
+
+| Turn type | First call |
+| --- | --- |
+| Named symbol / definition / signature | `nagato_read_signatures(target_symbol=...)` |
+| Callers or callees | `nagato_extract_callers` / `nagato_extract_callees` |
+| Code logic / behavior / semantic intent | `nagato_semantic_search(query=...)` |
+
+- **Forbidden as first call:** `nagato_list_dir`, `nagato_searchInFiles`, and IDE built-in search/grep/list tools. Use them only afterwards for exact literals or filenames.
+- **Ground the answer:** base it on the returned code chunks/signatures and name them.
+- **Zero plain-text answers before the first call.** After the tool results, answer in text.
 
 ## Description
 
@@ -48,7 +54,7 @@ Select the tool matching your known information:
 | Exact symbol name in specific file | `nagato_read_signatures(file_path=...)` | Scoped to file; falls back to live AST parse. |
 | Partial/fuzzy symbol in single file | `nagato_searchAST(query=..., file=...)` | Structural AST substring match. |
 | Callers or callees of symbol | `nagato_extract_callers` / `nagato_extract_callees` | Direct function and method call graph. |
-| Literal text, config, or error message | `nagato_searchInFile` / `nagato_searchInFiles` | Plain substring search across text files. |
+| Literal text, config, or error message | `nagato_searchInFile` / `nagato_searchInFiles` | Exact substring only; never for concepts or architecture. |
 | Filename | `nagato_find_file(filename=...)` | Exact filename search. |
 | Concept or natural language intent | `nagato_semantic_search(query=...)` | Vector search over code chunks. |
 
@@ -83,4 +89,4 @@ Select the tool matching your known information:
 - **No closures** — keep functions top-level and stateless where possible.
 - **Never weaken assertions** — fix the underlying implementation, never soften tests to force a pass.
 - **No quick fixes, workarounds, or downstream patches** — always fix the issue directly at the root source.
-- **You are an autonomous agent. NEVER output reasoning, explanations, or conversational text, unless explicitly asked. ONLY emit tool calls via the function calling mechanism. Silent execution only.**
+- **No narration between tool calls.** Final answer: concise, grounded in tool results.

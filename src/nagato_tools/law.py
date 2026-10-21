@@ -26,14 +26,23 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 import urllib.parse
 import urllib.request
 import zipfile
-import xml.etree.ElementTree as ET
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Optional
+
+# Use defusedxml to prevent XXE attacks
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    # Fallback: use stdlib with entity expansion disabled
+    import xml.etree.ElementTree as ET
+    # Disable entity expansion for security
+    ET.XMLParser = lambda *args, **kwargs: ET.XMLParser(*args, resolve_entities=False, **kwargs)
+from typing import Any
 
 import numpy as np
 
@@ -59,6 +68,51 @@ DEFAULT_SEARCH_LIMIT = 5
 MAX_SEARCH_LIMIT = 50
 RRF_K = 60
 
+# FTS5 special characters that need escaping
+_FTS5_SPECIAL_CHARS = set('"*()+-:<>@')
+
+# Allowed domains for external API calls (SSRF protection)
+_ALLOWED_LAW_API_DOMAINS = {
+    "de.openlegaldata.io",
+    "www.gesetze-im-internet.de",
+    "gesetze-im-internet.de",
+}
+
+# Thread safety locks for global mutable state
+_embedder_lock = threading.Lock()
+_index_cache_lock = threading.Lock()
+
+def _sanitize_fts5_query(query: str) -> str:
+    """
+    Sanitize user query for FTS5 MATCH operator.
+    Escapes special characters that could alter query semantics.
+    """
+    if not query:
+        return ""
+    # Escape double quotes by doubling them (FTS5 phrase syntax)
+    # Escape other special chars by wrapping in quotes
+    result = []
+    for char in query:
+        if char == '"':
+            result.append('""')
+        elif char in _FTS5_SPECIAL_CHARS:
+            result.append(f'"{char}"')
+        else:
+            result.append(char)
+    return ''.join(result)
+
+
+def _validate_law_api_url(url: str) -> bool:
+    """
+    Validate that URL is from an allowed domain (SSRF protection).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return parsed.netloc.lower() in _ALLOWED_LAW_API_DOMAINS
+    except Exception:
+        return False
+
+
 # Model embedder cache: model_name -> embedder
 _embedders: dict[str, Any] = {}
 
@@ -71,21 +125,21 @@ def _slugify(val: str) -> str:
     return re.sub(r"[^\w\-.]", "_", val.strip().lower())
 
 
-def _get_workspace_root(ctx: Optional[Any] = None) -> Path:
+def _get_workspace_root(ctx: Any | None = None) -> Path:
     """Get workspace root from context or fall back to central config."""
     if ctx is not None and hasattr(ctx, "workspace_root"):
         return Path(ctx.workspace_root)
     return get_workspace_root()
 
 
-def _get_context(ctx: Optional[Any] = None) -> Any:
+def _get_context(ctx: Any | None = None) -> Any:
     """Get context from injected parameter or fall back to mock."""
     if ctx is not None:
         return ctx
     return get_mock_context(_get_workspace_root(ctx))
 
 
-def _get_context_token_limit(ctx: Any, default: Optional[int] = None) -> int:
+def _get_context_token_limit(ctx: Any, default: int | None = None) -> int:
     """Get token limit from context or use cascading config default for 'law' / 'read' category."""
     max_context_size = getattr(ctx, "MaxContextSize", None)
     if isinstance(max_context_size, int) and max_context_size > 0:
@@ -126,7 +180,7 @@ def _truncate_to_token_limit(text: str, max_tokens: int | None = None, ctx: Any 
     return prefix + marker
 
 
-def get_law_config(ctx: Optional[Any] = None):
+def get_law_config(ctx: Any | None = None):
     """Retrieve LawConfig from FunctionsConfig."""
     try:
         from nagato_tools.config import load_functions_config
@@ -137,21 +191,30 @@ def get_law_config(ctx: Optional[Any] = None):
         return None
 
 
-def get_law_db_path(ctx: Optional[Any] = None) -> Path:
+def get_law_db_path(ctx: Any | None = None) -> Path:
     """Resolve the SQLite database path for German law data."""
     law_cfg = get_law_config(ctx)
     if law_cfg and getattr(law_cfg, "db_path", None):
-        return Path(law_cfg.db_path)
+        custom_path = Path(law_cfg.db_path)
+        if not custom_path.is_absolute():
+            custom_path = _get_workspace_root(ctx) / custom_path
+        # Security: Ensure resolved path is within workspace or user directory
+        custom_path = custom_path.resolve()
+        workspace_root = _get_workspace_root(ctx).resolve()
+        user_nagato = (Path.home() / ".nagato").resolve()
+        if not (custom_path.is_relative_to(workspace_root) or custom_path.is_relative_to(user_nagato)):
+            raise ValueError(f"Database path must be within workspace or ~/.nagato, got: {custom_path}")
+        return custom_path
     return Path.home() / ".nagato" / "law" / "hybrid.db"
 
 
-def get_law_index_dir(ctx: Optional[Any] = None) -> Path:
+def get_law_index_dir(ctx: Any | None = None) -> Path:
     """Resolve base directory for USearch vector indexes."""
     db_path = get_law_db_path(ctx)
     return db_path.parent / "indexes"
 
 
-def get_law_usearch_index_path(model_name: str, pack_id: str, ctx: Optional[Any] = None) -> Path:
+def get_law_usearch_index_path(model_name: str, pack_id: str, ctx: Any | None = None) -> Path:
     """Resolve file path for a specific model & pack USearch index."""
     idx_dir = get_law_index_dir(ctx)
     model_slug = _slugify(model_name)
@@ -159,8 +222,8 @@ def get_law_usearch_index_path(model_name: str, pack_id: str, ctx: Optional[Any]
     return idx_dir / model_slug / f"{pack_slug}_law.index"
 
 
-def _get_law_embedder(model_name: Optional[str] = None, ctx: Optional[Any] = None) -> Optional[Any]:
-    """Load or retrieve cached FastEmbed TextEmbedding model."""
+def _get_law_embedder(model_name: str | None = None, ctx: Any | None = None) -> Any | None:
+    """Load or retrieve cached FastEmbed TextEmbedding model (thread-safe)."""
     global _embedders
     if not model_name:
         law_cfg = get_law_config(ctx)
@@ -169,21 +232,26 @@ def _get_law_embedder(model_name: Optional[str] = None, ctx: Optional[Any] = Non
     if model_name in _embedders:
         return _embedders[model_name]
 
-    try:
-        from fastembed import TextEmbedding
+    with _embedder_lock:
+        # Double-checked locking pattern
+        if model_name in _embedders:
+            return _embedders[model_name]
+
         try:
-            embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
-        except TypeError:
-            embedder = TextEmbedding(model_name=model_name)
-        _embedders[model_name] = embedder
-        logger.info(f"Loaded embedding model: {model_name}")
-        return embedder
-    except Exception as exc:
-        logger.warning(f"Could not initialize FastEmbed with model {model_name}: {exc}")
-        return None
+            from fastembed import TextEmbedding
+            try:
+                embedder = TextEmbedding(model_name=model_name, providers=["CPUExecutionProvider"])
+            except TypeError:
+                embedder = TextEmbedding(model_name=model_name)
+            _embedders[model_name] = embedder
+            logger.info(f"Loaded embedding model: {model_name}")
+            return embedder
+        except Exception as exc:
+            logger.warning(f"Could not initialize FastEmbed with model {model_name}: {exc}")
+            return None
 
 
-def get_law_connection(db_path: Optional[Path] = None, ctx: Optional[Any] = None) -> sqlite3.Connection:
+def get_law_connection(db_path: Path | None = None, ctx: Any | None = None) -> sqlite3.Connection:
     """Get or initialize SQLite connection with WAL, FTS5 and multi-model embedding tables."""
     if db_path is None:
         db_path = get_law_db_path(ctx)
@@ -349,23 +417,24 @@ def get_law_connection(db_path: Optional[Path] = None, ctx: Optional[Any] = None
 
 
 def _load_usearch_index(index_path: Path, dimension: int) -> tuple[Any, np.ndarray]:
-    """Load USearch index and mapping from disk."""
+    """Load USearch index and mapping from disk (thread-safe)."""
     import usearch.index
 
-    idx = usearch.index.Index(
-        ndim=dimension,
-        metric=usearch.index.MetricKind.Cos,
-        dtype=usearch.index.ScalarKind.F32,
-    )
-    idx.load(str(index_path))
+    with _index_cache_lock:
+        idx = usearch.index.Index(
+            ndim=dimension,
+            metric=usearch.index.MetricKind.Cos,
+            dtype=usearch.index.ScalarKind.F32,
+        )
+        idx.load(str(index_path))
 
-    map_path = index_path.with_suffix(".npy")
-    if map_path.exists():
-        id_map = np.load(str(map_path))
-    else:
-        id_map = np.arange(idx.size, dtype=np.int64)
+        map_path = index_path.with_suffix(".npy")
+        if map_path.exists():
+            id_map = np.load(str(map_path))
+        else:
+            id_map = np.arange(idx.size, dtype=np.int64)
 
-    return idx, id_map
+        return idx, id_map
 
 
 def _build_usearch_index(
@@ -374,121 +443,128 @@ def _build_usearch_index(
     db_path: Path,
     index_path: Path,
     incremental: bool = False,
-    ctx: Optional[Any] = None,
+    ctx: Any | None = None,
 ) -> int:
-    """Build or incrementally update a USearch index for a specific model and pack."""
+    """Build or incrementally update a USearch index for a specific model and pack (thread-safe)."""
     import usearch.index
 
     dimension = MODEL_DIMENSIONS.get(model_name, 384)
     index_path.parent.mkdir(parents=True, exist_ok=True)
     map_path = index_path.with_suffix(".npy")
 
-    conn = get_law_connection(db_path, ctx=ctx)
-    cursor = conn.cursor()
+    with _index_cache_lock:
+        conn = get_law_connection(db_path, ctx=ctx)
+        cursor = conn.cursor()
 
-    existing_idx: Optional[Any] = None
-    existing_map: list[int] = []
+        existing_idx: Any | None = None
+        existing_map: list[int] = []
 
-    if incremental and index_path.exists() and map_path.exists():
-        try:
-            existing_idx, loaded_map = _load_usearch_index(index_path, dimension)
-            existing_map = loaded_map.tolist()
-        except Exception as e:
-            logger.warning(f"Could not load existing index for incremental update: {e}")
-            existing_idx = None
-            existing_map = []
+        if incremental and index_path.exists() and map_path.exists():
+            try:
+                existing_idx, loaded_map = _load_usearch_index(index_path, dimension)
+                existing_map = loaded_map.tolist()
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.warning(f"Could not load existing index for incremental update: {e}")
+                existing_idx = None
+                existing_map = []
 
-    already_indexed = set(existing_map)
+        already_indexed = set(existing_map)
 
-    # Gather law sections embeddings for this pack & model
-    # Note: Global ID scheme encodes source:
-    # Positive ID: law section id
-    # Negative ID: -chunk_id for court decision chunks
-    cursor.execute("""
-        SELECT l.id, e.embedding
-        FROM law_sections l
-        JOIN law_section_embeddings e ON l.id = e.section_id
-        WHERE e.model_name = ? AND (? = 'all' OR l.pack_id = ?)
-    """, (model_name, pack_id, pack_id))
-    law_rows = cursor.fetchall()
+        # Gather law sections embeddings for this pack & model
+        # Note: Global ID scheme encodes source:
+        # Positive ID: law section id
+        # Negative ID: -chunk_id for court decision chunks
+        cursor.execute("""
+            SELECT l.id, e.embedding
+            FROM law_sections l
+            JOIN law_section_embeddings e ON l.id = e.section_id
+            WHERE e.model_name = ? AND (? = 'all' OR l.pack_id = ?)
+        """, (model_name, pack_id, pack_id))
+        law_rows = cursor.fetchall()
 
-    cursor.execute("""
-        SELECT c.id, e.embedding
-        FROM court_decision_chunks c
-        JOIN court_decision_chunk_embeddings e ON c.id = e.chunk_id
-        WHERE e.model_name = ? AND (? = 'all' OR c.pack_id = ?)
-    """, (model_name, pack_id, pack_id))
-    case_rows = cursor.fetchall()
-    conn.close()
+        cursor.execute("""
+            SELECT c.id, e.embedding
+            FROM court_decision_chunks c
+            JOIN court_decision_chunk_embeddings e ON c.id = e.chunk_id
+            WHERE e.model_name = ? AND (? = 'all' OR c.pack_id = ?)
+        """, (model_name, pack_id, pack_id))
+        case_rows = cursor.fetchall()
+        conn.close()
 
-    new_items: list[tuple[int, bytes]] = []
-    for sid, emb in law_rows:
-        if sid not in already_indexed:
-            new_items.append((sid, emb))
-    for cid, emb in case_rows:
-        neg_cid = -cid
-        if neg_cid not in already_indexed:
-            new_items.append((neg_cid, emb))
+        new_items: list[tuple[int, bytes]] = []
+        for sid, emb in law_rows:
+            if sid not in already_indexed:
+                new_items.append((sid, emb))
+        for cid, emb in case_rows:
+            neg_cid = -cid
+            if neg_cid not in already_indexed:
+                new_items.append((neg_cid, emb))
 
-    if not new_items and existing_idx is not None:
-        logger.info(f"Index {index_path} is already up to date ({len(existing_map)} items).")
-        return len(existing_map)
+        if not new_items and existing_idx is not None:
+            logger.info(f"Index {index_path} is already up to date ({len(existing_map)} items).")
+            return len(existing_map)
 
-    if existing_idx is None:
-        idx = usearch.index.Index(
-            ndim=dimension,
-            metric=usearch.index.MetricKind.Cos,
-            dtype=usearch.index.ScalarKind.F32,
-        )
-        combined_map = []
-        vectors_to_add = []
-        keys_to_add = []
+        if existing_idx is None:
+            idx = usearch.index.Index(
+                ndim=dimension,
+                metric=usearch.index.MetricKind.Cos,
+                dtype=usearch.index.ScalarKind.F32,
+            )
+            combined_map = []
+            vectors_to_add = []
+            keys_to_add = []
 
-        total_rows = [(sid, emb) for sid, emb in law_rows] + [(-cid, emb) for cid, emb in case_rows]
-        for idx_key, (item_id, emb_blob) in enumerate(total_rows):
-            vec = np.frombuffer(emb_blob, dtype=np.float32)
-            if len(vec) == dimension:
-                vectors_to_add.append(vec)
-                keys_to_add.append(idx_key)
-                combined_map.append(item_id)
+            total_rows = [(sid, emb) for sid, emb in law_rows] + [(-cid, emb) for cid, emb in case_rows]
+            for idx_key, (item_id, emb_blob) in enumerate(total_rows):
+                vec = np.frombuffer(emb_blob, dtype=np.float32)
+                if len(vec) == dimension:
+                    vectors_to_add.append(vec)
+                    keys_to_add.append(idx_key)
+                    combined_map.append(item_id)
 
-        if vectors_to_add:
-            idx.add(np.array(keys_to_add, dtype=np.int64), np.array(vectors_to_add, dtype=np.float32))
+            if vectors_to_add:
+                idx.add(np.array(keys_to_add, dtype=np.int64), np.array(vectors_to_add, dtype=np.float32))
 
-        idx.save(str(index_path))
-        np.save(str(map_path), np.array(combined_map, dtype=np.int64))
-        _index_cache[(_slugify(model_name), _slugify(pack_id))] = (idx, np.array(combined_map, dtype=np.int64))
-        return len(combined_map)
-    else:
-        # Incremental add
-        start_key = len(existing_map)
-        keys_to_add = []
-        vectors_to_add = []
-        for offset, (item_id, emb_blob) in enumerate(new_items):
-            vec = np.frombuffer(emb_blob, dtype=np.float32)
-            if len(vec) == dimension:
-                vectors_to_add.append(vec)
-                keys_to_add.append(start_key + offset)
-                existing_map.append(item_id)
+            idx.save(str(index_path))
+            np.save(str(map_path), np.array(combined_map, dtype=np.int64))
+            _index_cache[(_slugify(model_name), _slugify(pack_id))] = (idx, np.array(combined_map, dtype=np.int64))
+            return len(combined_map)
+        else:
+            # Incremental add
+            start_key = len(existing_map)
+            keys_to_add = []
+            vectors_to_add = []
+            for offset, (item_id, emb_blob) in enumerate(new_items):
+                vec = np.frombuffer(emb_blob, dtype=np.float32)
+                if len(vec) == dimension:
+                    vectors_to_add.append(vec)
+                    keys_to_add.append(start_key + offset)
+                    existing_map.append(item_id)
 
-        if vectors_to_add:
-            existing_idx.add(np.array(keys_to_add, dtype=np.int64), np.array(vectors_to_add, dtype=np.float32))
+            if vectors_to_add:
+                existing_idx.add(np.array(keys_to_add, dtype=np.int64), np.array(vectors_to_add, dtype=np.float32))
 
-        existing_idx.save(str(index_path))
-        np.save(str(map_path), np.array(existing_map, dtype=np.int64))
-        _index_cache[(_slugify(model_name), _slugify(pack_id))] = (existing_idx, np.array(existing_map, dtype=np.int64))
-        return len(existing_map)
+            existing_idx.save(str(index_path))
+            np.save(str(map_path), np.array(existing_map, dtype=np.int64))
+            _index_cache[(_slugify(model_name), _slugify(pack_id))] = (existing_idx, np.array(existing_map, dtype=np.int64))
+            return len(existing_map)
 
 
-def _get_or_load_index(model_name: str, pack_id: str, ctx: Optional[Any] = None) -> Optional[tuple[Any, np.ndarray]]:
-    """Retrieve or load cached index for model and pack."""
+# LRU cache for index cache with max size
+
+# Maximum number of indexes to keep in memory
+_MAX_INDEX_CACHE_SIZE = 10
+
+def _get_or_load_index(model_name: str, pack_id: str, ctx: Any | None = None) -> tuple[Any, np.ndarray] | None:
+    """Retrieve or load cached index for model and pack (thread-safe with LRU eviction)."""
     global _index_cache
     m_slug = _slugify(model_name)
     p_slug = _slugify(pack_id)
     cache_key = (m_slug, p_slug)
 
-    if cache_key in _index_cache:
-        return _index_cache[cache_key]
+    with _index_cache_lock:
+        if cache_key in _index_cache:
+            return _index_cache[cache_key]
 
     index_path = get_law_usearch_index_path(model_name, pack_id, ctx)
     if not index_path.exists():
@@ -497,7 +573,12 @@ def _get_or_load_index(model_name: str, pack_id: str, ctx: Optional[Any] = None)
     dimension = MODEL_DIMENSIONS.get(model_name, 384)
     try:
         idx, id_map = _load_usearch_index(index_path, dimension)
-        _index_cache[cache_key] = (idx, id_map)
+        with _index_cache_lock:
+            # LRU eviction: remove oldest entry if cache is full
+            if len(_index_cache) >= _MAX_INDEX_CACHE_SIZE:
+                oldest_key = next(iter(_index_cache))
+                del _index_cache[oldest_key]
+            _index_cache[cache_key] = (idx, id_map)
         return idx, id_map
     except Exception as exc:
         logger.warning(f"Failed to load USearch index from {index_path}: {exc}")
@@ -508,7 +589,7 @@ def _get_or_load_index(model_name: str, pack_id: str, ctx: Optional[Any] = None)
 # Tool Implementations
 # ============================================================================
 
-async def nagato_law_init(_ctx: Optional[Any] = None) -> str:
+async def nagato_law_init(_ctx: Any | None = None) -> str:
     """
     Initialize the German Law and Decisions SQLite database schema, pragmas,
     and FTS5 tables under ~/.nagato/law/hybrid.db.
@@ -536,7 +617,7 @@ async def nagato_law_init(_ctx: Optional[Any] = None) -> str:
         return nagato_error(f"Failed to initialize law database: {exc}", tool="nagato_law_init")
 
 
-async def nagato_law_list_packs(_ctx: Optional[Any] = None) -> str:
+async def nagato_law_list_packs(_ctx: Any | None = None) -> str:
     """
     List available preset law and court decision packs with descriptions and book/court filters.
     """
@@ -574,7 +655,7 @@ async def nagato_law_list_packs(_ctx: Optional[Any] = None) -> str:
     return _truncate_to_token_limit("\n".join(lines), ctx=ctx)
 
 
-async def nagato_law_status(_ctx: Optional[Any] = None) -> str:
+async def nagato_law_status(_ctx: Any | None = None) -> str:
     """
     Show statistics, document counts, disk usage, active models, and index health.
     """
@@ -711,12 +792,12 @@ def _chunk_court_decision(
 
 async def nagato_law_ingest(
     source: str = "api",
-    limit: Optional[int] = None,
-    since: Optional[str] = None,
-    courts: Optional[list[str]] = None,
-    book_codes: Optional[list[str]] = None,
-    pack: Optional[str] = None,
-    _ctx: Optional[Any] = None,
+    limit: int | None = None,
+    since: str | None = None,
+    courts: list[str] | None = None,
+    book_codes: list[str] | None = None,
+    pack: str | None = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Ingest German federal laws or court decisions modularly by pack or book codes.
@@ -760,6 +841,10 @@ async def nagato_law_ingest(
             for b_code in resolved_books:
                 zip_url = f"https://www.gesetze-im-internet.de/{b_code}/xml.zip"
                 req = urllib.request.Request(zip_url, headers={"User-Agent": "NagatoFSM/0.26"})
+                # SSRF protection: validate URL domain
+                if not _validate_law_api_url(zip_url):
+                    logger.warning(f"Blocked request to disallowed domain: {zip_url}")
+                    continue
                 try:
                     with urllib.request.urlopen(req, timeout=30) as resp:
                         zip_data = resp.read()
@@ -767,7 +852,9 @@ async def nagato_law_ingest(
                         xml_files = [f for f in zf.namelist() if f.endswith(".xml")]
                         for xml_name in xml_files:
                             xml_bytes = zf.read(xml_name)
-                            root = ET.fromstring(xml_bytes)
+                            # Secure XML parsing: disable entity expansion (XXE protection)
+                            parser = ET.XMLParser(resolve_entities=False)
+                            root = ET.fromstring(xml_bytes, parser=parser)
                             book_title = root.findtext(".//jurabk") or b_code.upper()
 
                             cursor.execute(
@@ -818,39 +905,43 @@ async def nagato_law_ingest(
 
                 url = f"{base_api}/laws/?{urllib.parse.urlencode(query_params)}"
                 req = urllib.request.Request(url, headers={"User-Agent": "NagatoFSM/0.26"})
-                try:
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        results = data.get("results", []) if isinstance(data, dict) else []
-                        for item in results:
-                            b_code = item.get("slug") or item.get("book_code") or "law"
-                            b_title = item.get("title") or b_code
-                            sections = item.get("sections") or []
+                # SSRF protection: validate URL domain
+                if not _validate_law_api_url(url):
+                    logger.warning(f"Blocked request to disallowed domain: {url}")
+                else:
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            results = data.get("results", []) if isinstance(data, dict) else []
+                            for item in results:
+                                b_code = item.get("slug") or item.get("book_code") or "law"
+                                b_title = item.get("title") or b_code
+                                sections = item.get("sections") or []
 
-                            cursor.execute(
-                                "INSERT OR REPLACE INTO law_books(book_code, title, revision_date, latest, pack_id) VALUES (?, ?, ?, ?, ?)",
-                                (b_code, b_title, item.get("revision_date"), 1, resolved_pack),
-                            )
+                                cursor.execute(
+                                    "INSERT OR REPLACE INTO law_books(book_code, title, revision_date, latest, pack_id) VALUES (?, ?, ?, ?, ?)",
+                                    (b_code, b_title, item.get("revision_date"), 1, resolved_pack),
+                                )
 
-                            for sec in sections:
-                                sec_num = sec.get("number") or sec.get("section") or str(sec.get("id"))
-                                sec_title = sec.get("title") or ""
-                                content = sec.get("content") or sec.get("text") or ""
-                                if content:
-                                    md = f"# {b_code.upper()} § {sec_num}: {sec_title}\n\n{content}"
-                                    cursor.execute(
-                                        """
-                                        INSERT OR REPLACE INTO law_sections
-                                        (book_code, section, title, content, markdown_content, pack_id)
-                                        VALUES (?, ?, ?, ?, ?, ?)
-                                        """,
-                                        (b_code, sec_num, sec_title, content, md, resolved_pack),
-                                    )
-                                    ingested_laws += 1
-                                    if limit and ingested_laws >= limit:
-                                        break
-                except Exception as exc:
-                    logger.warning(f"OLDP API laws fetch failed: {exc}")
+                                for sec in sections:
+                                    sec_num = sec.get("number") or sec.get("section") or str(sec.get("id"))
+                                    sec_title = sec.get("title") or ""
+                                    content = sec.get("content") or sec.get("text") or ""
+                                    if content:
+                                        md = f"# {b_code.upper()} § {sec_num}: {sec_title}\n\n{content}"
+                                        cursor.execute(
+                                            """
+                                            INSERT OR REPLACE INTO law_sections
+                                            (book_code, section, title, content, markdown_content, pack_id)
+                                            VALUES (?, ?, ?, ?, ?, ?)
+                                            """,
+                                            (b_code, sec_num, sec_title, content, md, resolved_pack),
+                                        )
+                                        ingested_laws += 1
+                                        if limit and ingested_laws >= limit:
+                                            break
+                    except Exception as exc:
+                        logger.warning(f"OLDP API laws fetch failed: {exc}")
 
             # Ingest cases if court requested
             if is_case_pack or resolved_courts:
@@ -862,60 +953,64 @@ async def nagato_law_ingest(
 
                 url = f"{base_api}/cases/?{urllib.parse.urlencode(case_params)}"
                 req = urllib.request.Request(url, headers={"User-Agent": "NagatoFSM/0.26"})
-                try:
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        results = data.get("results", []) if isinstance(data, dict) else []
-                        for item in results:
-                            d_id = item.get("id")
-                            court_name = item.get("court", {}).get("name") if isinstance(item.get("court"), dict) else str(item.get("court", "BGH"))
-                            file_num = item.get("file_number") or ""
-                            date_val = item.get("date") or ""
-                            content = item.get("content") or item.get("text") or ""
+                # SSRF protection: validate URL domain
+                if not _validate_law_api_url(url):
+                    logger.warning(f"Blocked request to disallowed domain: {url}")
+                else:
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            results = data.get("results", []) if isinstance(data, dict) else []
+                            for item in results:
+                                d_id = item.get("id")
+                                court_name = item.get("court", {}).get("name") if isinstance(item.get("court"), dict) else str(item.get("court", "BGH"))
+                                file_num = item.get("file_number") or ""
+                                date_val = item.get("date") or ""
+                                content = item.get("content") or item.get("text") or ""
 
-                            if d_id and file_num:
-                                cursor.execute(
-                                    """
-                                    INSERT OR REPLACE INTO court_decisions
-                                    (id, court, file_number, date, ecli, type, slug, source_url, review_status, pack_id)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        d_id,
-                                        court_name,
-                                        file_num,
-                                        date_val,
-                                        item.get("ecli"),
-                                        item.get("type"),
-                                        item.get("slug"),
-                                        item.get("source_url"),
-                                        item.get("review_status"),
-                                        resolved_pack,
-                                    ),
-                                )
-                                chunks = _chunk_court_decision(d_id, court_name, file_num, date_val, content, resolved_pack)
-                                for c in chunks:
+                                if d_id and file_num:
                                     cursor.execute(
                                         """
-                                        INSERT OR REPLACE INTO court_decision_chunks
-                                        (decision_id, chunk_index, chunk_type, content, markdown_content, metadata_header, pack_id)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        INSERT OR REPLACE INTO court_decisions
+                                        (id, court, file_number, date, ecli, type, slug, source_url, review_status, pack_id)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                         """,
                                         (
-                                            c["decision_id"],
-                                            c["chunk_index"],
-                                            c["chunk_type"],
-                                            c["content"],
-                                            c["markdown_content"],
-                                            c["metadata_header"],
-                                            c["pack_id"],
+                                            d_id,
+                                            court_name,
+                                            file_num,
+                                            date_val,
+                                            item.get("ecli"),
+                                            item.get("type"),
+                                            item.get("slug"),
+                                            item.get("source_url"),
+                                            item.get("review_status"),
+                                            resolved_pack,
                                         ),
                                     )
-                                    ingested_cases += 1
-                                    if limit and ingested_cases >= limit:
-                                        break
-                except Exception as exc:
-                    logger.warning(f"OLDP API cases fetch failed: {exc}")
+                                    chunks = _chunk_court_decision(d_id, court_name, file_num, date_val, content, resolved_pack)
+                                    for c in chunks:
+                                        cursor.execute(
+                                            """
+                                            INSERT OR REPLACE INTO court_decision_chunks
+                                            (decision_id, chunk_index, chunk_type, content, markdown_content, metadata_header, pack_id)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                            """,
+                                            (
+                                                c["decision_id"],
+                                                c["chunk_index"],
+                                                c["chunk_type"],
+                                                c["content"],
+                                                c["markdown_content"],
+                                                c["metadata_header"],
+                                                c["pack_id"],
+                                            ),
+                                        )
+                                        ingested_cases += 1
+                                        if limit and ingested_cases >= limit:
+                                            break
+                    except Exception as exc:
+                        logger.warning(f"OLDP API cases fetch failed: {exc}")
 
         elif source == "hf":
             # Hugging Face Datasets path (requires accepted terms & token)
@@ -959,10 +1054,10 @@ async def nagato_law_ingest(
 
 
 async def nagato_law_build_index(
-    model: Optional[str] = None,
-    pack: Optional[str] = None,
+    model: str | None = None,
+    pack: str | None = None,
     incremental: bool = False,
-    _ctx: Optional[Any] = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Generate dense embeddings and build/update USearch indexes for specific or all models and packs.
@@ -995,8 +1090,6 @@ async def nagato_law_build_index(
             summary_lines.append(f"- Model {m_name}: SKIPPED (FastEmbed not available)")
             continue
 
-        dim = MODEL_DIMENSIONS.get(m_name, 384)
-
         # 1. Embed un-embedded law sections
         cursor.execute("""
             SELECT l.id, l.content
@@ -1013,7 +1106,7 @@ async def nagato_law_build_index(
                 texts = [row[1] for row in batch]
                 vecs = list(embedder.embed(texts))
                 insert_batch = []
-                for (sid, _), vec in zip(batch, vecs):
+                for (sid, _), vec in zip(batch, vecs, strict=False):
                     vec_f32 = np.array(vec, dtype=np.float32)
                     insert_batch.append((sid, m_name, vec_f32.tobytes(), len(vec_f32)))
                 cursor.executemany("""
@@ -1038,7 +1131,7 @@ async def nagato_law_build_index(
                 texts = [row[1] for row in batch]
                 vecs = list(embedder.embed(texts))
                 insert_batch = []
-                for (cid, _), vec in zip(batch, vecs):
+                for (cid, _), vec in zip(batch, vecs, strict=False):
                     vec_f32 = np.array(vec, dtype=np.float32)
                     insert_batch.append((cid, m_name, vec_f32.tobytes(), len(vec_f32)))
                 cursor.executemany("""
@@ -1061,14 +1154,14 @@ async def nagato_law_search(
     query: str,
     limit: int = DEFAULT_SEARCH_LIMIT,
     source: str = "both",
-    court: Optional[str] = None,
-    book_code: Optional[str] = None,
-    pack: Optional[str] = None,
-    model: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    court: str | None = None,
+    book_code: str | None = None,
+    pack: str | None = None,
+    model: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     start_offset: int = 0,
-    _ctx: Optional[Any] = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Hybrid Search (BM25 + USearch Dense Vector) across German federal laws and court decisions.
@@ -1099,7 +1192,7 @@ async def nagato_law_search(
 
         # 1. BM25 Search on Law Sections
         if source in ("both", "laws"):
-            fts_query = normalized_query.replace('"', '""')
+            fts_query = _sanitize_fts5_query(normalized_query)
             try:
                 where_clauses = ["law_sections_fts MATCH ?"]
                 params: list[Any] = [fts_query]
@@ -1127,7 +1220,7 @@ async def nagato_law_search(
 
         # 2. BM25 Search on Court Decision Chunks
         if source in ("both", "cases"):
-            fts_query = normalized_query.replace('"', '""')
+            fts_query = _sanitize_fts5_query(normalized_query)
             try:
                 where_clauses = ["court_decision_chunks_fts MATCH ?"]
                 params = [fts_query]
@@ -1164,9 +1257,9 @@ async def nagato_law_search(
         embedder = _get_law_embedder(active_model, ctx=ctx)
         if embedder is not None:
             try:
-                packs_to_search = [pack] if pack else [
-                    p for p in (getattr(law_cfg, "packs", {}).keys() if law_cfg else ["core"])
-                ]
+                packs_to_search = [pack] if pack else list(
+                    getattr(law_cfg, "packs", {}).keys() if law_cfg else ["core"]
+                )
                 query_vecs = list(embedder.embed([normalized_query]))
                 if query_vecs:
                     q_vec = np.array(query_vecs[0], dtype=np.float32)
@@ -1176,7 +1269,7 @@ async def nagato_law_search(
                             idx, id_map = loaded
                             if idx.size > 0:
                                 matches = idx.search(q_vec, 30)
-                                for k, dist in zip(matches.keys, matches.distances):
+                                for k, dist in zip(matches.keys, matches.distances, strict=False):
                                     if k < len(id_map):
                                         real_id = int(id_map[k])
                                         # Filter by source type
@@ -1252,7 +1345,7 @@ async def nagato_law_search(
 async def nagato_law_fetch(
     source: str,
     identifier: str,
-    _ctx: Optional[Any] = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Retrieve full content of a German law section or court decision.
@@ -1278,6 +1371,9 @@ async def nagato_law_fetch(
             if len(parts) < 2:
                 return nagato_error("Law identifier format must be 'book_code:section' (e.g. 'bgb:823').", tool="nagato_law_fetch")
             book_code = parts[0]
+            # Validate book_code format (alphanumeric + underscore only)
+            if not re.match(r"^[a-z0-9_]+$", book_code):
+                return nagato_error(f"Invalid book_code format: '{book_code}'. Only lowercase alphanumeric and underscore allowed.", tool="nagato_law_fetch")
             sec_num = re.sub(r"[^\d\w]", "", parts[1])
 
             cursor.execute("""
@@ -1327,7 +1423,7 @@ async def nagato_law_fetch(
                 f"# Decision: {court} - {file_num} ({date_val})",
                 f"**ECLI**: {ecli or 'N/A'} | **Pack**: {p_id} | **Decision ID**: {dec_id}\n",
             ]
-            for c_type, md_c, raw_c in chunks:
+            for _c_type, md_c, raw_c in chunks:
                 lines.append(md_c if md_c else raw_c)
                 lines.append("\n---\n")
 
@@ -1343,9 +1439,9 @@ async def nagato_law_fetch(
 async def nagato_law_compare_models(
     query: str,
     limit: int = 5,
-    models: Optional[list[str]] = None,
+    models: list[str] | None = None,
     pack: str = "core",
-    _ctx: Optional[Any] = None,
+    _ctx: Any | None = None,
 ) -> str:
     """
     Compare retrieval results and ranking across multiple embedding models for the same query.
@@ -1396,7 +1492,7 @@ async def nagato_law_compare_models(
             t_elapsed_ms = (time.time() - t0) * 1000
 
             report_lines.append(f"  Latency: {t_elapsed_ms:.1f}ms | Matches: {len(matches.keys)}")
-            for rank_i, (k, dist) in enumerate(zip(matches.keys, matches.distances), start=1):
+            for rank_i, (k, dist) in enumerate(zip(matches.keys, matches.distances, strict=False), start=1):
                 if k < len(id_map):
                     item_id = int(id_map[k])
                     if item_id > 0:

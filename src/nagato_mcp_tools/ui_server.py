@@ -227,7 +227,7 @@ def create_app(workspace_root: Optional[Union[str, Path]] = None, session_id: Op
         target_ws = ws_root
         if workspace:
             parsed_ws = Path(workspace).resolve()
-            if is_workspace_allowed and is_workspace_allowed(parsed_ws, fallback_workspace=ws_root):
+            if is_workspace_allowed and is_workspace_allowed(parsed_ws, fallback_workspace=ws_root, transport="http"):
                 target_ws = parsed_ws
         sessions = await asyncio.to_thread(list_standalone_sessions, target_ws)
         return {

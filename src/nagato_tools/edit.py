@@ -219,9 +219,7 @@ async def nagato_edit(
         # Write replacement as full file content
         target_file.write_text(replacement, encoding="utf-8", newline="")
         ctx.mark_file_modified(file)
-# SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
-        _get_semantic_indexer().update_symbol_tables_only(file)
-        sync_queued = None  # Insight disabled
+        sync_queued = (_get_semantic_indexer().update_symbol_tables_only(file) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
             rolled = _check_post_edit(file, _ctx, "nagato_edit")
@@ -232,7 +230,7 @@ async def nagato_edit(
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
-            return f"{notice}SUCCESS: File {file} created with content ({len(replacement)} bytes). Lint: OK.\n{msg}"
+            return notice + f"SUCCESS: File {file} created with content ({len(replacement)} bytes). Lint: OK.\n{msg}"
         else:
             return f"PARTIAL SUCCESS: File {file} created, but LINT/SYNTAX FAILED:\n{lint_result}"
 
@@ -317,8 +315,7 @@ async def nagato_edit(
         # newline="" disables Windows os.linesep translation; content already
         # carries its original \n/\r\n bytes verbatim from the manual decode above.
         target_file.write_text(new_content, encoding="utf-8", newline="")
-        _get_semantic_indexer().update_symbol_tables_only(file)
-        sync_queued = None  # Insight disabled
+        sync_queued = (_get_semantic_indexer().update_symbol_tables_only(file) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
             rolled = _check_post_edit(file, _ctx, "nagato_edit")
@@ -329,7 +326,7 @@ async def nagato_edit(
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
-            return f"{notice}SUCCESS: Edit applied to {file} ({len(replacement)} chars replaced). Lint: OK.\n{msg}"
+            return notice + f"SUCCESS: Edit applied to {file} ({len(replacement)} chars replaced). Lint: OK.\n{msg}"
         else:
             return f"PARTIAL SUCCESS: Edit applied to {file}, but LINT/SYNTAX FAILED:\n{lint_result}"
 
@@ -391,11 +388,8 @@ async def nagato_edit_lines(
         action_context = getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
         if action_context is not None and hasattr(action_context, "record_file_change"):
             action_context.record_file_change(file, before_content=None, after_content=new_code, is_new=True)
-        
-# SYMBOL UPDATE: AST-only, kein ML-Modell, kein OOM-Risiko
-        _get_semantic_indexer().update_symbol_tables_only(file)
 
-        sync_queued = None  # Insight disabled
+        sync_queued = (_get_semantic_indexer().update_symbol_tables_only(file) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
             rolled = _check_post_edit(file, _ctx, "nagato_edit_lines")
@@ -406,7 +400,7 @@ async def nagato_edit_lines(
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
-            return f"{notice}SUCCESS: File {file} created with content ({len(new_code)} bytes). Lint: OK.\n{msg}"
+            return notice + f"SUCCESS: File {file} created with content ({len(new_code)} bytes). Lint: OK.\n{msg}"
         else:
             return f"PARTIAL SUCCESS: File {file} created, but LINT/SYNTAX FAILED:\n{lint_result}"
 
@@ -556,8 +550,7 @@ async def nagato_edit_lines(
         target_file.write_text(new_content_for_undo, encoding="utf-8", newline="")
         ctx.mark_file_modified(file)
 
-        _get_semantic_indexer().update_symbol_tables_only(file)
-        sync_queued = None  # Insight disabled
+        sync_queued = (_get_semantic_indexer().update_symbol_tables_only(file) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
             rolled = _check_post_edit(file, _ctx, "nagato_edit_lines")
@@ -626,9 +619,8 @@ async def nagato_delete(
         # Delete the file
         target_file.unlink()
 
-        # Update symbol index
-        _get_semantic_indexer().update_symbol_tables_only(file)
-        sync_queued = None  # Insight disabled
+        # Update symbol index and Insight graph
+        sync_queued = (_get_semantic_indexer().update_symbol_tables_only(file) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued)
             rolled = _check_post_edit(file, _ctx, "nagato_delete")
@@ -636,7 +628,7 @@ async def nagato_delete(
                 return rolled
 
         notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
-        return f"{notice}SUCCESS: File {file} deleted ({file_size} bytes)."
+        return notice + f"SUCCESS: File {file} deleted ({file_size} bytes)."
     except Exception as e:
         return nagato_error(str(e), tool="nagato_delete")
 
@@ -712,12 +704,10 @@ async def nagato_rename(
                 raise
         
         # Update symbol index for both files
-        _get_semantic_indexer().update_symbol_tables_only(source)
-        _get_semantic_indexer().update_symbol_tables_only(destination)
-        sync_queued_source = None  # Insight disabled
+        sync_queued_source = (_get_semantic_indexer().update_symbol_tables_only(source) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued_source)
-        sync_queued_dest = None  # Insight disabled
+        sync_queued_dest = (_get_semantic_indexer().update_symbol_tables_only(destination) and False)
         if _ctx is not None:
             setattr(_ctx, "_last_insight_sync_queued", sync_queued_dest)
             rolled = _check_post_edit(destination, _ctx, "nagato_rename")
