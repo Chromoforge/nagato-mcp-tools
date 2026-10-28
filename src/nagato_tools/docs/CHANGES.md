@@ -5,58 +5,54 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 ## [Unreleased]
 
 ### Added
-- **Critical First Action Requirement for Copilot Instructions** (`.github/copilot-instructions-parts/standalone/00_core.md`, `.github/copilot-instructions-parts/standalone/v2/00_core.md`, `.github/copilot-instructions-standalone.md`): Added mandatory pre-response project knowledge querying to prevent guessing or hallucination. Requires tool execution before any text output, with specific directives to use `nagato_unified_search`, `nagato_view_radar`/`nagato_read_signatures`, and `nagato_semantic_search`/`nagato_searchInFiles` before answering user queries.
-- **Wikipedia USearch, FAISS, and Categories Modules** (`fsm/functions_internal/wikipedia_categories.py`, `fsm/functions_internal/wikipedia_faiss.py`, `fsm/functions_internal/wikipedia_usearch.py`): Added advanced vector search capabilities to Wikipedia tool suite with USearch (HNSW) and FAISS indexing options, plus category-based filtering for enhanced retrieval precision and performance.
-- **Cross-Workspace Allowed Roots Whitelist & Denied Paths** (`fsm/functions_internal/config.py`, `read.py`, `edit.py`, `search.py`, `lint.py`, `git.py`, `shell.py`): Added `"allowed_roots"` whitelist and `"denied_paths"` access blocklist in `.nagato/functions_config.json`. Authorizes tools to read, edit, search, and lint across multiple workspace roots or external tool repositories while preserving path-traversal protection and cleanly separating indexing exclusions (`ignored_dirs`) from hard access permissions (`denied_paths`).
-- **Separate Indexing Exclusions from Access Denied Paths** (`fsm/functions_internal/config.py`): Split `ignored_dirs` (for indexing exclusions) from `denied_paths` (for access control) to enable more flexible configuration. Added `get_ignored_dirs()` and `get_denied_paths()` helpers with workspace-aware resolution.
-
-### Changed
-- **Default German Law Embedding Model** (`fsm/functions_internal/config.py`): Set `LawConfig.default_model` to `intfloat/multilingual-e5-large` and prioritized it over `paraphrase-multilingual-MiniLM-L12-v2` for enhanced retrieval accuracy.
-- **Global Insight Storage Path Clarification** (`README.md`, `dashboard/README.md`, `fsm/insight/README.md`, `.github/copilot-instructions.md`): Clarified that the global architectural knowledge graph resides in cross-project user-global storage (`~/.nagato/insight.db`) rather than a workspace-local `.nagato/insight.db`.
-
-### Fixed
-- **Git Tool Diff Output** (`fsm/functions_internal/git.py`): Replaced hardcoded `diff --name-only HEAD~1` with flexible `git diff` supporting optional arguments (e.g. revisions, pathspecs, flags) and returning actual diff hunks instead of only filenames.
-- **Global Insight DB Resolution Robustness** (`fsm/insight/store.py`): Added exception and callable checks around `get_global_nagato_home()`, falling back cleanly to `Path.home() / ".nagato"`.
-- **Sync Rewrites for Workspace Registry** (`sync_tools.py`): Added regex import rewrites mapping `fsm.workspace_registry` to `nagato_tools.workspace_registry` during standalone tool builds.
-
-### Added
-- **Wikipedia Tool Suite** (`fsm/functions_internal/wikipedia.py`, `fsm/tool_categories.py`, `fsm/tool_registry_builder.py`): New dedicated `WIKIPEDIA` tool category with 5 tools for local vector similarity search and live API fallback over Wikipedia encyclopedic knowledge:
+- **Anime Hybrid Search Tool Suite** (`src/nagato_tools/anime.py`, `src/nagato_tools/__init__.py`, `src/nagato_tools/facade.py`): Complete tool suite for hybrid BM25 and dense vector retrieval over anime metadata (anime-offline-database with 41k+ entries) and live AniList/Kitsu API fallback:
+  - `nagato_anime_search`, `nagato_anime_fetch`, `nagato_anime_api_search`, `nagato_anime_init`, `nagato_anime_status`, `nagato_anime_build_index`, `nagato_anime_ingest`, `nagato_anime_compare_models`, `nagato_anime_list_packs`, `nagato_anime_external_ids`.
+  - Added dedicated `ANIME` tool category in `ToolCategory` enum and category metadata.
+- **Shared Context Utilities** (`src/nagato_tools/context_utils.py`): Extracted shared context and workspace helpers (`_get_context`, `_get_workspace_root`, `_get_fsm_instance`, `set_active_fsm`) to prevent circular import dependencies across execution, edit, and plan modules.
+- **Plan Generation Tools** (`src/nagato_tools/plan.py`, `src/nagato_tools/plan_parser.py`): Integrated `nagato_write_plan` tool with dedicated plan parsing and undo tracking for structured multi-step task execution.
+- **MCP Server Workspace Bootstrap** (`src/nagato_mcp_tools/server.py`): Automated workspace config initialization upon MCP server startup via `initialize_workspace_config()`.
+- **Tree-sitter Multilingual Support** (`pyproject.toml`): Added runtime dependencies for `tree-sitter`, `tree-sitter-javascript`, `tree-sitter-typescript`, `tree-sitter-html`, and `tree-sitter-xml` for AST parsing across multilingual codebases.
+- **Critical First Action Requirement for Copilot Instructions** (`.github/copilot-instructions.md`, `AGENT_INSTRUCTIONS.md`): Mandatory pre-response project knowledge querying using structural index tools (`nagato_read_signatures`, `nagato_extract_callers`, `nagato_semantic_search`) before answering user queries to prevent hallucination.
+- **Wikipedia USearch, FAISS, and Categories Modules** (`src/nagato_tools/wikipedia.py`): Added advanced vector search capabilities to Wikipedia tool suite with USearch (HNSW) and FAISS indexing options, plus category-based filtering for enhanced retrieval precision and performance.
+- **Cross-Workspace Allowed Roots Whitelist & Denied Paths** (`src/nagato_tools/config.py`, `read.py`, `edit.py`, `search.py`, `lint.py`, `git.py`, `shell.py`): Added `"allowed_roots"` whitelist and `"denied_paths"` access blocklist in `.nagato/functions_config.json`. Authorizes tools to read, edit, search, and lint across multiple workspace roots or external tool repositories while preserving path-traversal protection and cleanly separating indexing exclusions (`ignored_dirs`) from hard access permissions (`denied_paths`).
+- **Separate Indexing Exclusions from Access Denied Paths** (`src/nagato_tools/config.py`): Split `ignored_dirs` (for indexing exclusions) from `denied_paths` (for access control) to enable more flexible configuration. Added `get_ignored_dirs()` and `get_denied_paths()` helpers with workspace-aware resolution.
+- **Wikipedia Tool Suite** (`src/nagato_tools/wikipedia.py`, `src/nagato_tools/tool_categories.py`): Dedicated `WIKIPEDIA` tool category with 5 tools for local vector similarity search and live API fallback over Wikipedia encyclopedic knowledge:
   - `nagato_wikipedia_search`: Two-stage search returning compact preview snippets, distance scores, and section metadata without polluting LLM context
   - `nagato_wikipedia_fetch`: Targeted full-text retrieval for specific articles or sections identified during search
   - `nagato_wikipedia_api_search`: Live Wikipedia REST API fallback when local dumps not yet indexed
   - `nagato_wikipedia_init`: Idempotent SQLite database and `sqlite-vec` virtual table initialization
   - `nagato_wikipedia_status`: Database statistics (article count, chunk count, index size, vector engine status)
 - **Two-Stage Search → Fetch Pattern**: Token-conservative retrieval architecture using `jinaai/jina-embeddings-v2-base-en` (768-dim) embeddings with `sqlite-vec` virtual tables
-- **Standalone Integration** (`fsm/function_facade.py`, `sync_tools.py`): Wikipedia tools registered in standalone facade, synced to `nagato_tools` package, and exposed via MCP server
-- **Configuration Schema** (`fsm/functions_internal/config.py`): New `WikipediaConfig` dataclass with `db_path`, `embedding_model`, `dimension`, `chunk_size`, `chunk_overlap`, `batch_size`, `device` options
-
-### Added
+- **Standalone Integration** (`src/nagato_tools/facade.py`): Wikipedia and law tools registered in standalone facade, synced to `nagato_tools` package, and exposed via MCP server.
+- **Configuration Schema** (`src/nagato_tools/config.py`): New `WikipediaConfig` dataclass with `db_path`, `embedding_model`, `dimension`, `chunk_size`, `chunk_overlap`, `batch_size`, `device` options.
 - **Wikipedia Hybrid Search & USearch Indexing** (`src/nagato_tools/wikipedia.py`, `src/nagato_tools/__init__.py`): Upgraded Wikipedia retrieval to SOTA Hybrid Search combining BM25 lexical search (SQLite FTS5) and dense vector search (USearch HNSW, Cosine similarity, 384-dim FastEmbed `all-MiniLM-L6-v2`) fused via Reciprocal Rank Fusion (RRF, $k=60$). Added `nagato_build_usearch_index` tool. Storage structure transitioned from chunk-level vec0 to structural `wiki_sections` with FTS5 virtual table and triggers, plus standalone USearch index file.
 - **Class-Level Callee Aggregation** (`src/nagato_tools/read.py`): Extended `nagato_extract_callees` to support querying class symbols directly (aggregating callees across member methods like `ClassName.%` and `%.ClassName.%`).
-
-### Changed
-- **Default Token Limits & Docstring Only Search** (`src/nagato_tools/config.py`): Lowered standalone default output token limits (`read`: 6000, `search`: 2000, `web`: 4000) to conserve context budget. Changed `SemanticSearchConfig.docstring_only` default to `True`.
-- **Wikipedia Configuration Defaults** (`src/nagato_tools/config.py`, `README.md`): Updated defaults to `hybrid.db`, `sentence-transformers/all-MiniLM-L6-v2` (384-dim), `batch_size=2000`, and added `min_section_chars=150`.
-- **Tool Count Update** (`sync_tools.py`): Base standalone tool count increased from 31 to 36
-- **Landing Page Manifest** (`sync_tools.py`): Added "Wikipedia & Knowledge Retrieval" category to exported `tools.json`
-- **README Documentation** (`README.md`, `.mcptools/MCP_TOOLS_README.md`): Expanded both READMEs with Wikipedia tool suite documentation, configuration examples, and category listings
-- **Category Mapping** (`fsm/function_facade.py`): Added `finalize_handler` → `ToolCategory.FINALIZE` and `wikipedia` → `ToolCategory.WIKIPEDIA` mappings; fixed `_get_tool_category_for_tool` signature
-
-### Fixed
-- **Standalone Facade Category Resolution** (`fsm/function_facade.py`): All 42 registered standalone tools now cleanly resolve to their respective `ToolCategory` (no UNKNOWN entries) 
-
-### Documentation
-- **Three Independent Persistence Systems** (`.github/copilot-instructions.md`, `AGENT_INSTRUCTIONS.md`, `src/nagato_tools/docs/AGENT_INSTRUCTIONS.md`): Restructured system initialization docs to explicitly separate Symbol DB, Semantic Search, and Insight Graph with comparison tables showing purpose, initialization tool, and auto-reindex behavior. Added dedicated "System Initialization" section emphasizing no single "init all" function exists. Clarified `docstring_only` config applies only to Semantic Search embeddings.
-
-### Refactored
-- **Semantic Index Combined Sync & AST-Aware Chunking** (`src/nagato_tools/semanticindex.py`): Added `sync_file_all()` for combined single-pass sync updating both semantic index (code_chunks, global_symbols, global_calls) AND Insight knowledge graph (AST nodes, edges) in one atomic operation. Replaced EmbeddingModels with FastEmbed-based lazy loading. Implemented AST-aware chunk splitting via `_split_large_chunk_ast_aware()` with statement-boundary awareness. Added `docstring_only` mode support. Enhanced code_chunks table with symbol_name, node_id, chunk_type columns. Added graceful fallback for non-Python files using sliding-window chunking. Linked chunks to Insight node_ids for cross-system navigation.
-
-### Added
 - **Workspace Registry Integration** (`src/nagato_mcp_tools/server.py`, `src/nagato_mcp_tools/ui_server.py`, `src/nagato_tools/workspace_registry.py`): Register workspace on server startup. Added `/api/v1/standalone/workspaces` endpoint to list registered workspaces. Enhanced `/api/v1/standalone/sessions` with optional workspace query parameter and validation via `is_workspace_allowed()`. Returns workspace_root in sessions response. Graceful fallback when workspace_registry unavailable.
 - **Config Persistence on First Load** (`src/nagato_tools/config.py`): Added `_write_functions_config()` helper and modified `load_functions_config()` to create and persist default `functions_config.json` when file doesn't exist. Ensures `.nagato/functions_config.json` exists for downstream tooling with all config sections.
-- **Workspace Bootstrap on Facade Init** (`src/nagato_tools/facade.py`): Added `_bootstrap_workspace()` called during `ToolFacade.__init__`. Creates `.nagato/` subdirectories (redo_cache, sessions, standalone, undo_cache), generates default `functions_config.json`, and creates `standalone.yaml` with default tool filtering (denylist: nagato_shell, nagato_upload). Graceful error handling.
-- **Combined Single-Pass Sync Tools** (`src/nagato_tools/search.py`, `src/nagato_tools/__init__.py`): Added `nagato_sync_file_all()` for single-file combined sync and `nagato_sync_directory_all()` for full project combined sync. Both update semantic index (code_chunks, global_symbols, global_calls) AND Insight knowledge graph (AST nodes, edges) in one atomic operation, eliminating duplicate AST parsing and embedding initialization.
-- **Default Denylist Extension** (`src/nagato_tools/config.py`, `src/nagato_tools/facade.py`): Added `nagato_is_agent_running` to default `tool_filtering.denied_tools` in `FunctionsConfig` and to `standalone.yaml` default denylist. Expanded facade module scan list to include `debugger`, `system`, `wikipedia` modules for tool discovery.
+- **Workspace Bootstrap on Facade Init** (`src/nagato_tools/facade.py`): Added `_bootstrap_workspace()` called during `ToolFacade.__init__`. Creates `.nagato/` subdirectories (redo_cache, sessions, standalone, undo_cache), generates default `functions_config.json`, and creates `standalone.yaml` with default tool filtering. Graceful error handling.
+- **Combined Single-Pass Sync Tools** (`src/nagato_tools/search.py`, `src/nagato_tools/__init__.py`): Added `nagato_sync_file_all()` for single-file combined sync and `nagato_sync_directory_all()` for full project combined sync. Both update semantic index (code_chunks, global_symbols, global_calls) in one atomic operation, eliminating duplicate AST parsing and embedding initialization.
+- **Default Denylist Extension** (`src/nagato_tools/config.py`, `src/nagato_tools/facade.py`): Added `nagato_is_agent_running` to default `tool_filtering.denied_tools` in `FunctionsConfig` and to `standalone.yaml` default denylist. Expanded facade module scan list to include `debugger`, `system`, `wikipedia`, `law`, `anime` modules for tool discovery.
+
+### Changed
+- **Version Bump** (`pyproject.toml`): 0.2.5 → 0.3.0
+- **Snapshot Schema Version 2** (`src/nagato_tools/undo.py`): Enhanced snapshot schema to version 2 with forward-compatibility support for version 1 and 2 snapshots.
+- **Default German Law Embedding Model** (`src/nagato_tools/config.py`): Set `LawConfig.default_model` to `intfloat/multilingual-e5-large` and prioritized it over `paraphrase-multilingual-MiniLM-L12-v2` for enhanced retrieval accuracy.
+- **Default Token Limits & Docstring Only Search** (`src/nagato_tools/config.py`): Lowered standalone default output token limits (`read`: 6000, `search`: 2000, `web`: 4000) to conserve context budget. Changed `SemanticSearchConfig.docstring_only` default to `True`.
+- **Wikipedia Configuration Defaults** (`src/nagato_tools/config.py`, `README.md`): Updated defaults to `hybrid.db`, `sentence-transformers/all-MiniLM-L6-v2` (384-dim), `batch_size=2000`, and added `min_section_chars=150`.
+- **Tool Count Update** (`README.md`): Base standalone tool count updated to reflect new search and inspection suites.
+- **README Documentation** (`README.md`): Expanded documentation with Wikipedia, German Law, and Anime tool suite documentation, configuration examples, and category listings.
+- **Category Mapping** (`src/nagato_tools/facade.py`): Added `finalize_handler` → `ToolCategory.FINALIZE`, `wikipedia` → `ToolCategory.WIKIPEDIA`, `law` → `ToolCategory.LAW`, and `anime` → `ToolCategory.ANIME` mappings.
+
+### Fixed
+- **Input Repair Escape Sequences** (`src/nagato_tools/input_repair.py`): Replaced `\1` backreference with `\g<1>` in `repair_malformed_json` regex to prevent escape artifact detection.
+- **Shell Tool Default Allowlist** (`src/nagato_tools/shell.py`): Added safe inspect and utility commands (`ls`, `dir`, `echo`, `git`, `cat`, `type`) to `DEFAULT_ALLOWED_COMMANDS`.
+- **Semantic Indexer Access in Edit Tool** (`src/nagato_tools/edit.py`): Restored `_get_semantic_indexer()` helper to maintain single-pass symbol table updates on file edits.
+- **Git Tool Diff Output** (`src/nagato_tools/git.py`): Replaced hardcoded `diff --name-only HEAD~1` with flexible `git diff` supporting optional arguments (e.g. revisions, pathspecs, flags) and returning actual diff hunks instead of only filenames.
+- **Sync Rewrites for Workspace Registry** (`sync_tools.py`): Added regex import rewrites mapping `fsm.workspace_registry` to `nagato_tools.workspace_registry` during standalone tool builds.
+- **Standalone Facade Category Resolution** (`src/nagato_tools/facade.py`): All registered standalone tools now cleanly resolve to their respective `ToolCategory` (no UNKNOWN entries).
+
+### Refactored
+- **Semantic Index Combined Sync & AST-Aware Chunking** (`src/nagato_tools/semanticindex.py`): Added `sync_file_all()` for combined single-pass sync updating semantic index (code_chunks, global_symbols, global_calls) in one atomic operation. Replaced EmbeddingModels with FastEmbed-based lazy loading. Implemented AST-aware chunk splitting via `_split_large_chunk_ast_aware()` with statement-boundary awareness. Added `docstring_only` mode support. Enhanced code_chunks table with symbol_name and chunk_type columns. Added graceful fallback for non-Python files using sliding-window chunking.
 
 ### Maintenance
 - **WebUI Assets** (`src/nagato_tools/webui_dist/`): Updated to new Vite build (`index-CGTfLYGS.js`, `index-MtSVh_jA.css`).
@@ -83,9 +79,7 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 
 ### Added
 - **Redundant Read Detection** (`config.py`, `ctx_mock.py`, `read.py`): New `redundant_read_detection.enabled` config option (default: `true`). When enabled, `nagato_read_file` and `nagato_read_lines` track file reads and prepend a warning if the same unchanged file is read again without intervening edits or disk changes. Agent edits via `nagato_edit`/`nagato_edit_lines` reset the warning; external file modifications (mtime/hash change) also reset it.
-- **Hierarchical Compound Nodes in WebUI** (`webui_dist/`): Insight Graph now renders AST containment hierarchies as collapsible containers (Domains → Concepts → Components → Files). Double-click to expand/collapse; clickable breadcrumb trail for instant navigation.
 - **Session Listing API** (`telemetry.py`, `ui_server.py`): New `list_standalone_sessions()` function and `/api/v1/standalone/sessions` REST endpoint to enumerate all available standalone sessions with undo/redo/audit status.
-- **Concept Batch Tool** (`facade.py`, `tool_categories.py`): Added `nagato_concept_batch` to the list of action-journal-tracked tools and INSIGHT category metadata.
 
 ### Changed
 - **WebUI Asset Resolution Priority** (`ui_server.py`): Local workspace `dashboard/dist` (Vite dev build) is now checked first before packaged assets, improving development iteration speed.
@@ -127,7 +121,6 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 - **Symbol Name Sanitization** (`facade.py`): `_preprocess_arguments()` now strips common LLM prefixes (`call `, `def `, `async def `, `class `, `function `, `method `) from symbol-name parameters (`target_symbol`, `function_name`, `symbol`, `symbol_name`, `name`).
 - **AST Search Line Ranges** (`search.py`): `nagato_searchAST` now reports `end_lineno` (e.g., `lines 10-15`) instead of single line numbers.
 - **Semantic Search Config Defaults** (`config.py`): Default `db_path` changed to `.nagato/nagato_codebase.db`, `model_cache_dir` to `.nagato/models`; `resolve_db_path()` now defaults to `.nagato` folder.
-- **Insight Display Config** (`config.py`): New `get_insight_display_config()` for search/radar formatting options.
 - **Server Type Hint Handling** (`server.py`): `_public_parameters()` now uses `typing.get_type_hints()` for accurate annotation resolution.
 
 ### Changed
