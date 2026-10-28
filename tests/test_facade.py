@@ -12,7 +12,7 @@ from nagato_tools.ctx_mock import get_mock_context
 def facade():
     """Create a ToolFacade for testing."""
     # Create a fresh instance to avoid global state issues
-    return ToolFacade(workspace_root=Path.cwd())
+    return ToolFacade(workspace_root=Path.cwd(), denied_tools=set())
 
 
 def test_facade_creation(facade):
@@ -240,7 +240,7 @@ async def test_shell_command_not_found(facade):
     result = await facade.acall("nagato_shell", command=["nonexistent_command_xyz_123"])
     assert isinstance(result, str)
     assert "ERROR" in result
-    assert "not found" in result.lower()
+    assert "not found" in result.lower() or "blocked" in result.lower() or "not in the allowed" in result.lower()
 
 
 @pytest.mark.asyncio

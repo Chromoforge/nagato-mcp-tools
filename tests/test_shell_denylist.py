@@ -52,13 +52,22 @@ def test_safe_commands_are_allowed():
         ["ls", "-la"],
         ["echo", "hello"],
         ["python", "-c", "print(2 + 2)"],
-        ["git", "status"],
-        ["git", "log", "--oneline", "-5"],
         ["cat", "README.md"],
     ]
     for args in samples:
         is_blocked, reason = _check(args)
         assert not is_blocked, f"Expected {args} to be ALLOWED, got blocked: {reason!r}"
+
+
+def test_git_commands_are_blocked_from_shell():
+    """git commands are redirected to nagato_git."""
+    samples = [
+        ["git", "status"],
+        ["git", "log", "--oneline", "-5"],
+    ]
+    for args in samples:
+        is_blocked, reason = _check(args)
+        assert is_blocked, f"Expected {args} to be blocked, got allowed"
 
 
 def test_dangerous_pattern_matches_in_full_args():

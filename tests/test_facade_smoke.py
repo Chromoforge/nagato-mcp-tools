@@ -13,7 +13,7 @@ from nagato_tools.facade import ToolFacade
 @pytest.fixture
 def facade():
     """Create a ToolFacade for testing."""
-    return ToolFacade(workspace_root=Path.cwd())
+    return ToolFacade(workspace_root=Path.cwd(), denied_tools=set())
 
 
 @pytest.mark.asyncio
@@ -176,8 +176,18 @@ async def test_read_lines(facade):
 
 
 @pytest.mark.asyncio
-async def test_upload(facade):
-    """Test upload function."""
+async def test_upload(facade, monkeypatch):
+    """Test upload function without mutating the actual git repository."""
+    import subprocess
+
+    orig_run = subprocess.run
+
+    def mock_run(args, *a, **kw):
+        if len(args) > 1 and args[0] == "git" and args[1] in ("add", "commit"):
+            return subprocess.CompletedProcess(args, 0, stdout="[mock] ok", stderr="")
+        return orig_run(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
     result = await facade.acall("nagato_upload", commit_message="test")
     assert isinstance(result, str)
     assert len(result) > 0

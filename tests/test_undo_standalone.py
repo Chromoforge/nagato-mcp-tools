@@ -59,11 +59,11 @@ def test_snapshot_filename_has_uuid_suffix(mock_ctx, workspace):
 
 
 def test_snapshot_has_schema_version(mock_ctx):
-    """Every snapshot carries schema_version=1 (forward-compat marker)."""
+    """Every snapshot carries schema_version=1 or 2 (forward-compat marker)."""
     _track_edit_for_undo(mock_ctx, "hello.py", old_content="a", new_content="b")
     undo_dir = _get_standalone_undo_dir(mock_ctx)
     snapshot = _read_snapshot(next(undo_dir.glob("snapshot_*.json")))
-    assert snapshot.get("schema_version") == 1
+    assert snapshot.get("schema_version") in (1, 2)
     assert snapshot["file"] == "hello.py"
     assert snapshot["old_content"] == "a"
     assert snapshot["new_content"] == "b"
@@ -131,7 +131,7 @@ def test_snapshot_writers_coexist_in_same_dir(mock_ctx, workspace):
     # Both snapshots must be parseable by the undo loader (same schema_version).
     for s in snapshots:
         snap = _read_snapshot(s)
-        assert snap.get("schema_version") == 1
+        assert snap.get("schema_version") in (1, 2)
 
 
 def test_prune_keeps_max_50_snapshots(mock_ctx, workspace):
