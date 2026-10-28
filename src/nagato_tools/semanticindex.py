@@ -1,5 +1,6 @@
 import ast
 import logging
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,7 +29,7 @@ def _get_embedding_executor() -> ThreadPoolExecutor:
     return _embedding_executor
 
 
-def _split_large_chunk_ast_aware(source_code: str, node: ast.AST, max_chars: int) -> list[str]:
+def _split_large_chunk_ast_aware(source_code: str, node: ast.AST | None, max_chars: int, segment: str | None = None) -> list[str]:
     """Split a large AST node into smaller chunks at logical boundaries.
     
     Tries to split at:
@@ -38,15 +39,47 @@ def _split_large_chunk_ast_aware(source_code: str, node: ast.AST, max_chars: int
     
     Args:
         source_code: Full source code of the file
-        node: The AST node (FunctionDef, AsyncFunctionDef, or ClassDef)
+        node: The AST node (FunctionDef, AsyncFunctionDef, or ClassDef), or None for non-Python
         max_chars: Maximum characters per chunk
+        segment: Pre-extracted segment text (used when node is None)
         
     Returns:
         List of chunk strings, each ≤ max_chars
     """
-    segment = ast.get_source_segment(source_code, node)
+    if segment is None:
+        segment = ast.get_source_segment(source_code, node) if node else ""
     if not segment or len(segment) <= max_chars:
         return [segment] if segment else []
+    
+    # If no AST node (non-Python), just split by lines
+    if node is None:
+        lines = segment.splitlines(keepends=True)
+        chunks = []
+        current_chunk = []
+        current_len = 0
+        
+        for line in lines:
+            current_chunk.append(line)
+            current_len += len(line)
+            if current_len >= max_chars:
+                chunk_text = ''.join(current_chunk)
+                if len(chunk_text) <= max_chars:
+                    chunks.append(chunk_text)
+                else:
+                    logger.warning(f"Chunk exceeds {max_chars} chars, truncating")
+                    chunks.append(chunk_text[:max_chars])
+                current_chunk = []
+                current_len = 0
+        
+        if current_chunk:
+            chunk_text = ''.join(current_chunk)
+            if len(chunk_text) <= max_chars:
+                chunks.append(chunk_text)
+            else:
+                logger.warning(f"Final chunk exceeds {max_chars} chars, truncating")
+                chunks.append(chunk_text[:max_chars])
+        
+        return chunks
     
     # Try to find inner nodes we can split on
     inner_nodes = []
@@ -900,14 +933,15 @@ class SemanticIndexSearch:
         with target_file.open("r", encoding="utf-8", errors="replace") as f:
             source_code = f.read()
 
-        try:
-            tree = ast.parse(source_code)
-        except SyntaxError as e:
-            logger.warning(f"Syntax error in {file_rel_path}: {str(e)}")
-            return f"Skipped: syntax error in {file_rel_path}"
-        except Exception as e:
-            logger.error(f"Unexpected AST parsing error in {file_rel_path}: {str(e)}")
-            raise
+        # Use analyzer registry for all file types
+        from nagato_tools.insight_file_analyzers import get_analyzer_registry
+        registry = get_analyzer_registry()
+        analysis = registry.analyze_file(source_code, file_rel_path, target_file)
+        
+        if analysis.errors:
+            for err in analysis.errors:
+                logger.warning(f"Analysis error in {file_rel_path}: {err}")
+            # Continue with partial analysis rather than skipping
 
         # 1. Fire AST extractions for symbols and calls (Python only)
         extracted_sigs = []
@@ -932,60 +966,73 @@ class SemanticIndexSearch:
         # Build a map from qualname to Insight node_id for linking
         insight_node_ids = {}
         try:
-            from nagato_tools.config import get_workspace_root
             from nagato_tools.insight_store import InsightStore
-            insight_store = InsightStore(workspace_root=get_workspace_root())
-            ast_nodes = insight_store.get_ast_nodes(origin_file=file_rel_path)
+            insight_store = InsightStore(
+                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+            )
+            try:
+                ast_nodes = insight_store.get_ast_nodes(origin_file=file_rel_path)
+            finally:
+                insight_store.close()
             for n in ast_nodes:
                 if n.origin_symbol:
                     insight_node_ids[n.origin_symbol] = n.id
         except Exception:
             pass
         
-        if is_python_file:
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    qualname = node.name
-                    for sig in extracted_sigs:
-                        if sig.get("symbol") == node.name and sig.get("qualname"):
-                            qualname = sig["qualname"]
-                            break
-                    
-                    chunk_type = "function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
-                    node_id = insight_node_ids.get(qualname, "")
-                    
-                    if getattr(self, "docstring_only", False):
-                        doc = ast.get_docstring(node)
-                        if doc:
-                            chunks.append(doc)
+        # Use analyzer results for chunking (works for all file types)
+        for symbol in analysis.symbols:
+            qualname = symbol.qualname
+            chunk_type = "function" if symbol.kind in ("function", "method") else "class"
+            node_id = insight_node_ids.get(qualname, "")
+            
+            if getattr(self, "docstring_only", False):
+                if symbol.doc:
+                    chunks.append(symbol.doc)
+                    metas.append({
+                        "file": file_rel_path,
+                        "line": symbol.line_start,
+                        "name": symbol.name,
+                        "symbol_name": qualname,
+                        "node_id": node_id,
+                        "chunk_type": chunk_type,
+                    })
+            else:
+                # Extract source segment for this symbol
+                lines = source_code.splitlines(keepends=True)
+                if symbol.line_start > 0 and symbol.line_end >= symbol.line_start:
+                    segment = ''.join(lines[symbol.line_start - 1:symbol.line_end])
+                    if segment:
+                        if len(segment) <= max_chunk_chars:
+                            chunk_texts = [segment]
+                        else:
+                            chunk_texts = _split_large_chunk_ast_aware(source_code, None, max_chunk_chars, segment)
+                        
+                        for chunk_text in chunk_texts:
+                            chunks.append(chunk_text)
                             metas.append({
                                 "file": file_rel_path,
-                                "line": node.lineno,
-                                "name": node.name,
+                                "line": symbol.line_start,
+                                "name": symbol.name,
                                 "symbol_name": qualname,
                                 "node_id": node_id,
                                 "chunk_type": chunk_type,
                             })
-                    else:
-                        segment = ast.get_source_segment(source_code, node)
-                        if segment:
-                            if len(segment) <= max_chunk_chars:
-                                chunk_texts = [segment]
-                            else:
-                                chunk_texts = _split_large_chunk_ast_aware(source_code, node, max_chunk_chars)
-                            
-                            for chunk_text in chunk_texts:
-                                chunks.append(chunk_text)
-                                metas.append({
-                                    "file": file_rel_path,
-                                    "line": node.lineno,
-                                    "name": node.name,
-                                    "symbol_name": qualname,
-                                    "node_id": node_id,
-                                    "chunk_type": chunk_type,
-                                })
-        else:
-            # Graceful fallback: sliding-window chunking for non-Python files
+        
+        # Also add any chunks from the analyzer (e.g., standalone chunks for non-symbol content)
+        for chunk in analysis.chunks:
+            chunks.append(chunk.text)
+            metas.append({
+                "file": file_rel_path,
+                "line": chunk.line_start,
+                "name": chunk.symbol_name or f"chunk_{chunk.line_start}",
+                "symbol_name": chunk.qualname,
+                "node_id": chunk.node_id,
+                "chunk_type": chunk.chunk_type,
+            })
+        
+        # If no chunks from analyzer, use sliding-window fallback
+        if not chunks:
             lines = source_code.splitlines(keepends=True)
             window_size = max(1, max_chunk_chars // 80)
             overlap = max(1, window_size // 4)
@@ -1067,8 +1114,18 @@ class SemanticIndexSearch:
         insight_result = ""
         try:
             from nagato_tools.insight_ast_bridge import ASTInsightBridge
-            bridge = ASTInsightBridge()
-            insight_result = bridge.sync_file(target_file, flush_embeds=True)
+            from nagato_tools.insight_store import InsightStore
+
+            store = InsightStore(
+                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+            )
+            try:
+                bridge = ASTInsightBridge(
+                    store=store, workspace_root=workspace_root, ignored_dirs=get_ignored_dirs(ctx=ctx)
+                )
+                insight_result = bridge.sync_file(target_file, flush_embeds=True)
+            finally:
+                store.close()
         except Exception as e:
             logger.warning(f"Insight sync failed for {file_rel_path}: {str(e)}")
             insight_result = f"Insight sync failed: {str(e)}"
@@ -1102,17 +1159,59 @@ class SemanticIndexSearch:
         else:
             target_root = (workspace_root / root_dir).resolve()
             if not target_root.is_relative_to(workspace_root):
-                return f"ERROR: Path traversal detected. {root_dir} is outside workspace."
+                return f"ERROR: Path traversal detected. {root_dir} is outside workspace. Workspace root: {workspace_root}"
             if not target_root.exists() or not target_root.is_dir():
-                return f"ERROR: {root_dir} does not exist or is not a directory."
+                return f"ERROR: {root_dir} does not exist or is not a directory. Resolved path: {target_root}. Workspace root: {workspace_root}"
 
         # Get ignored_dirs and search_dirs from functions_config.json (works for both FSM and standalone)
         ignored_dirs = get_ignored_dirs(ctx=ctx)
         semantic_config = get_semantic_search_config(ctx=ctx)
         search_dirs = semantic_config.search_dirs if semantic_config else []
         
-        # Collect files first for progress tracking
-        python_files = []
+        # Get all supported extensions from analyzer registry
+        from nagato_tools.insight_file_analyzers import get_analyzer_registry
+        registry = get_analyzer_registry()
+        supported_extensions = set(registry.get_supported_extensions())
+        
+        # First pass: create DIRECTORY nodes for all directories in the tree
+        # We need to create them in order from root to leaves so parent directories exist
+        dir_paths = []
+        seen_dirs: set[str] = set()
+        files_to_sync = []  # files with supported extensions (full analysis)
+        unsupported_files = []  # files without supported extensions (FILE node only)
+        
+        def collect_dirs_and_files(search_root: Path):
+            for root, dirs, files in os.walk(str(search_root)):
+                # Prune ignored directories in-place
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in ignored_dirs and not d.startswith(".")
+                ]
+                
+                # Get relative path of this directory
+                try:
+                    rel_dir = str(Path(root).relative_to(workspace_root)).replace("\\", "/")
+                except ValueError:
+                    rel_dir = str(root).replace("\\", "/")
+                
+                if rel_dir != "." and rel_dir != target_root.as_posix().replace("\\", "/"):
+                    dir_paths.append(rel_dir)
+                    seen_dirs.add(rel_dir)
+                
+                # Collect ALL files, not just supported extensions
+                for file in files:
+                    file_path = Path(root) / file
+                    parts = file_path.relative_to(target_root).parts
+                    if any(part in ignored_dirs or part.startswith(".") for part in parts):
+                        continue
+                    
+                    ext = file_path.suffix.lower()
+                    rel_path = str(file_path.relative_to(workspace_root)).replace("\\", "/")
+                    
+                    if ext in supported_extensions:
+                        files_to_sync.append(file_path)
+                    else:
+                        unsupported_files.append((rel_path, file_path))
         
         if search_dirs and not external:
             # Whitelist mode: only scan specified subdirectories
@@ -1124,34 +1223,73 @@ class SemanticIndexSearch:
                     search_path.relative_to(target_root)
                 except ValueError:
                     continue
-                
-                for file_path in search_path.rglob("*.py"):
-                    parts = file_path.relative_to(target_root).parts
-                    if any(part in ignored_dirs or part.startswith(".") for part in parts):
-                        continue
-                    python_files.append(file_path)
+                collect_dirs_and_files(search_path)
         else:
             # Blacklist mode (default): scan everything except ignored_dirs
-            for file_path in target_root.rglob("*.py"):
-                parts = file_path.relative_to(target_root).parts
-                if any(part in ignored_dirs or part.startswith(".") for part in parts):
-                    continue
-                python_files.append(file_path)
+            collect_dirs_and_files(target_root)
         
-        # Initialize Insight bridge once for the entire directory
-        insight_bridge = None
+        # Sort directories by depth (shallowest first) so parents are created before children
+        dir_paths.sort(key=lambda p: p.count("/"))
+        
+        # Create DIRECTORY nodes and CONTAINS edges between directories
         try:
             from nagato_tools.insight_ast_bridge import ASTInsightBridge
-            insight_bridge = ASTInsightBridge()
+            from nagato_tools.insight_store import InsightStore
+            from nagato_tools.insight_models import NodeType, RelationType
+            
+            store = InsightStore(
+                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+            )
+            try:
+                bridge = ASTInsightBridge(
+                    store=store, workspace_root=workspace_root, ignored_dirs=ignored_dirs
+                )
+                
+                for rel_dir in dir_paths:
+                    parent_rel = str(Path(rel_dir).parent).replace("\\", "/")
+                    if parent_rel == ".":
+                        parent_rel = ""
+                    
+                    # Upsert DIRECTORY node
+                    dir_node, created, changed = store.upsert_ast_node(
+                        origin_file=rel_dir,
+                        origin_symbol="",
+                        node_type=NodeType.DIRECTORY,
+                        title=rel_dir,
+                        summary=f"Directory: {rel_dir}",
+                        mtime=0.0,
+                        content_hash="",
+                    )
+                    bridge._embed_node(dir_node)
+                    
+                    # Create CONTAINS edge from parent directory to this directory
+                    if parent_rel:
+                        parent_nodes = store.search_nodes(parent_rel, limit=1, include_orphaned=True)
+                        parent_node = None
+                        for n in parent_nodes:
+                            if n.type == NodeType.DIRECTORY and n.origin_file == parent_rel:
+                                parent_node = n
+                                break
+                        if parent_node:
+                            if not bridge._edge_exists(parent_node.id, dir_node.id, RelationType.CONTAINS):
+                                store.create_edge(
+                                    parent_node.id,
+                                    dir_node.id,
+                                    RelationType.CONTAINS,
+                                    f"{parent_rel} contains {rel_dir}",
+                                    created_by="ast",
+                                )
+            finally:
+                store.close()
         except Exception as e:
-            logger.warning(f"Could not initialize Insight bridge: {str(e)}")
+            logger.warning(f"Failed to create directory nodes: {str(e)}")
         
         indexed_count = 0
         skipped_count = 0
         error_count = 0
-        total_files = len(python_files)
+        total_files = len(files_to_sync)
         
-        for i, file_path in enumerate(python_files):
+        for i, file_path in enumerate(files_to_sync):
             if external:
                 stored_path = file_path.resolve().as_posix()
             else:
@@ -1175,12 +1313,79 @@ class SemanticIndexSearch:
                 logger.error(f"Failed to sync {stored_path}: {str(e)}")
                 error_count += 1
         
-        # Flush any pending Insight embeddings
-        if insight_bridge:
+        # Second pass: create FILE nodes for unsupported file types (images, videos, CAD, etc.)
+        # These files don't get full analysis but should still have FILE nodes in the Insight graph
+        for rel_path, file_path in unsupported_files:
             try:
-                insight_bridge._flush_pending_embeds()
+                if progress_callback:
+                    progress_callback(indexed_count + skipped_count + error_count + 1, 
+                                    total_files + len(unsupported_files), rel_path)
+                
+                logger.info(f"Syncing (FILE node only) [{indexed_count + skipped_count + error_count + 1}/{total_files + len(unsupported_files)}]: {rel_path}")
+                
+                # Create FILE node directly in Insight graph
+                from nagato_tools.insight_store import InsightStore
+                from nagato_tools.insight_models import NodeType, RelationType
+                from nagato_tools.insight_ast_bridge import ASTInsightBridge
+                
+                store = InsightStore(
+                    workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+                )
+                try:
+                    bridge = ASTInsightBridge(
+                        store=store, workspace_root=workspace_root, ignored_dirs=ignored_dirs
+                    )
+                    
+                    mtime = file_path.stat().st_mtime
+                    file_hash = ""
+                    try:
+                        import hashlib
+                        file_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    except Exception:
+                        pass
+                    
+                    # Upsert FILE node
+                    file_node, created, changed = store.upsert_ast_node(
+                        origin_file=rel_path,
+                        origin_symbol="",
+                        node_type=NodeType.FILE,
+                        title=rel_path,
+                        summary=f"File: {rel_path}",
+                        mtime=mtime,
+                        content_hash=file_hash,
+                    )
+                    bridge._embed_node(file_node)
+                    
+                    # Create CONTAINS edge from parent directory to this file
+                    parent_rel = str(Path(rel_path).parent).replace("\\", "/")
+                    if parent_rel != ".":
+                        parent_nodes = store.search_nodes(parent_rel, limit=1, include_orphaned=True)
+                        parent_node = None
+                        for n in parent_nodes:
+                            if n.type == NodeType.DIRECTORY and n.origin_file == parent_rel:
+                                parent_node = n
+                                break
+                        if parent_node:
+                            if not bridge._edge_exists(parent_node.id, file_node.id, RelationType.CONTAINS):
+                                store.create_edge(
+                                    parent_node.id,
+                                    file_node.id,
+                                    RelationType.CONTAINS,
+                                    f"{parent_rel} contains {rel_path}",
+                                    created_by="ast",
+                                )
+                    
+                    if created:
+                        indexed_count += 1
+                    else:
+                        skipped_count += 1
+                        
+                finally:
+                    store.close()
+                    
             except Exception as e:
-                logger.warning(f"Failed to flush Insight embeddings: {str(e)}")
+                logger.error(f"Failed to sync unsupported file {rel_path}: {str(e)}")
+                error_count += 1
         
         return f"Synced {indexed_count} files ({skipped_count} skipped, {error_count} errors) under {target_root}."
 

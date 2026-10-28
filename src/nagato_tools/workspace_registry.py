@@ -1,9 +1,9 @@
 """
-Nagato Workspace Registry
+Nagato Workspace Registry & Allowlist
 
 Tracks known/active workspace roots across standalone MCP tools, CLI agents, and WebUI.
 Persists in ~/.nagato/workspaces.json with last-seen timestamps and session metadata.
-Enforces security boundaries: only registered workspaces (or subpaths) can be served.
+Enforces security boundaries via ~/.nagato/allowed_workspaces.yaml (explicit allowlist).
 """
 
 from __future__ import annotations
@@ -13,7 +13,13 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
+
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,11 @@ def get_global_nagato_home() -> Path:
 def get_registry_file() -> Path:
     """Get the path to ~/.nagato/workspaces.json."""
     return get_global_nagato_home() / "workspaces.json"
+
+
+def get_allowlist_file() -> Path:
+    """Get the path to ~/.nagato/allowed_workspaces.yaml."""
+    return get_global_nagato_home() / "allowed_workspaces.yaml"
 
 
 def load_workspaces_registry() -> Dict[str, Any]:
@@ -67,6 +78,120 @@ def save_workspaces_registry(registry: Dict[str, Any]) -> None:
                 tmp_path.unlink()
             except Exception:
                 pass
+
+
+def load_allowlist() -> Set[Path]:
+    """Load the allowlist from ~/.nagato/allowed_workspaces.yaml.
+    
+    Returns a set of resolved Path objects for fast lookup.
+    """
+    path = get_allowlist_file()
+    if not path.exists():
+        return set()
+    if not YAML_AVAILABLE:
+        logger.warning("PyYAML not available, cannot load allowlist")
+        return set()
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+            if not isinstance(data, list):
+                logger.warning("Allowlist file does not contain a list, ignoring")
+                return set()
+            allowed = set()
+            for item in data:
+                if isinstance(item, str):
+                    try:
+                        allowed.add(Path(item).resolve())
+                    except Exception:
+                        logger.warning("Invalid path in allowlist: %s", item)
+            return allowed
+    except Exception as e:
+        logger.warning("Failed to load workspace allowlist: %s", e)
+        return set()
+
+
+def save_allowlist(allowed: Set[Path]) -> None:
+    """Save the allowlist to ~/.nagato/allowed_workspaces.yaml atomically."""
+    if not YAML_AVAILABLE:
+        logger.warning("PyYAML not available, cannot save allowlist")
+        return
+    path = get_allowlist_file()
+    tmp_path = path.with_suffix(".tmp")
+    try:
+        # Sort for consistent output
+        paths = sorted(str(p) for p in allowed)
+        with tmp_path.open("w", encoding="utf-8") as f:
+            yaml.dump(paths, f, default_flow_style=False, sort_keys=False)
+        tmp_path.replace(path)
+    except Exception as e:
+        logger.warning("Failed to save workspace allowlist: %s", e)
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def ensure_allowlist_exists() -> Set[Path]:
+    """Ensure allowlist file exists, auto-populating from registry if empty.
+    
+    Returns the current allowlist.
+    """
+    path = get_allowlist_file()
+    if path.exists():
+        allowed = load_allowlist()
+        # If file exists but is empty, auto-populate from registry
+        if not allowed:
+            registry = load_workspaces_registry()
+            allowed = set()
+            for item in registry.get("workspaces", {}).values():
+                p_str = item.get("path")
+                if p_str:
+                    try:
+                        allowed.add(Path(p_str).resolve())
+                    except Exception:
+                        pass
+            if allowed:
+                save_allowlist(allowed)
+                logger.info("Auto-populated allowlist with %d workspaces from registry", len(allowed))
+        return allowed
+    
+    # Auto-populate from registry on first run
+    registry = load_workspaces_registry()
+    allowed = set()
+    for item in registry.get("workspaces", {}).values():
+        p_str = item.get("path")
+        if p_str:
+            try:
+                allowed.add(Path(p_str).resolve())
+            except Exception:
+                pass
+    
+    if allowed:
+        save_allowlist(allowed)
+        logger.info("Auto-populated allowlist with %d workspaces from registry", len(allowed))
+    
+    return allowed
+
+
+def add_to_allowlist(workspace_root: Path | str) -> Path:
+    """Add a workspace to the allowlist."""
+    ws = Path(workspace_root).resolve()
+    allowed = ensure_allowlist_exists()
+    allowed.add(ws)
+    save_allowlist(allowed)
+    return ws
+
+
+def remove_from_allowlist(workspace_root: Path | str) -> bool:
+    """Remove a workspace from the allowlist. Returns True if removed."""
+    ws = Path(workspace_root).resolve()
+    allowed = load_allowlist()
+    if ws in allowed:
+        allowed.remove(ws)
+        save_allowlist(allowed)
+        return True
+    return False
 
 
 def register_workspace(
@@ -149,13 +274,13 @@ def is_workspace_allowed(
     """Validate whether the given workspace_root is allowed to be accessed.
     
     For stdio transport (MCP): Always allow - process boundary provides isolation.
-    For http/websocket transports: Enforce registry check.
+    For http/websocket transports: Check allowlist first, then fallback to registry.
     
     Allowed if (http/websocket only):
     1. Equals or is relative to the server's default/fallback workspace
-    2. Exactly matches or is inside any path registered in ~/.nagato/workspaces.json
+    2. Exactly matches or is inside any path in the allowlist (~/.nagato/allowed_workspaces.yaml)
     """
-    # stdio transport: process-per-workspace = isolation, no registry needed
+    # stdio transport: process-per-workspace = isolation, no allowlist needed
     if transport == "stdio":
         return True
     
@@ -171,16 +296,13 @@ def is_workspace_allowed(
         except ValueError:
             pass
 
-    data = load_workspaces_registry()
-    for item in data.get("workspaces", {}).values():
-        p_str = item.get("path")
-        if not p_str:
-            continue
-        p = Path(p_str).resolve()
-        if target == p:
+    # Check explicit allowlist (primary authorization)
+    allowed = load_allowlist()
+    for allowed_path in allowed:
+        if target == allowed_path:
             return True
         try:
-            target.relative_to(p)
+            target.relative_to(allowed_path)
             return True
         except ValueError:
             continue

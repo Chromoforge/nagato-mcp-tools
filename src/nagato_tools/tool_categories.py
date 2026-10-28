@@ -38,6 +38,7 @@ class ToolCategory(Enum):
     FINALIZE = auto()
     WIKIPEDIA = auto()
     LAW = auto()
+    ANIME = auto()
 
     @property
     def display_name(self) -> str:
@@ -175,8 +176,8 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
         description="Epistemic World Model / Knowledge Graph tools (concepts, links, radar, search).",
         group=CategoryGroup.INSIGHT,
         example_tools=[
-            "nagato_concept_create", "nagato_concept_batch", "nagato_concept_link", "nagato_concept_collapse",
-            "nagato_concept_expand", "nagato_view_radar", "nagato_search_concept",
+            "nagato_create_node", "nagato_batch_nodes", "nagato_link_nodes", "nagato_collapse_nodes",
+            "nagato_expand_nodes", "nagato_view_radar", "nagato_search_nodes",
             "nagato_insights_search", "nagato_sync_ast_to_insight", "nagato_unified_search",
             "nagato_drift_report", "nagato_impact_analysis", "nagato_block_save",
             "nagato_block_load", "nagato_block_list", "nagato_block_delete",
@@ -207,6 +208,13 @@ CATEGORY_METADATA: Final[dict[ToolCategory, CategoryMeta]] = {
         group=CategoryGroup.READ_ONLY,
         example_tools=["nagato_law_search", "nagato_law_fetch", "nagato_law_init", "nagato_law_status", "nagato_law_ingest", "nagato_law_build_index", "nagato_law_compare_models", "nagato_law_list_packs"],
         purpose="Use to search and fetch German laws and court decisions via hybrid BM25 and dense vectors.",
+        allows_state_changes=False,
+    ),
+    ToolCategory.ANIME: CategoryMeta(
+        description="Anime metadata hybrid search and retrieval tools (anime-offline-database + AniList/Kitsu API).",
+        group=CategoryGroup.READ_ONLY,
+        example_tools=["nagato_anime_search", "nagato_anime_fetch", "nagato_anime_api_search", "nagato_anime_init", "nagato_anime_status", "nagato_anime_ingest", "nagato_anime_build_index", "nagato_anime_compare_models", "nagato_anime_list_packs", "nagato_anime_external_ids"],
+        purpose="Use to search and fetch anime metadata via hybrid BM25 and dense vectors with cross-references to MAL, AniList, Kitsu, AniDB, and more.",
         allows_state_changes=False,
     ),
 }

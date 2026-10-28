@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -11,6 +12,7 @@ from nagato_tools.config import (
     get_semantic_search_config,
     save_semantic_search_root,
     resolve_allowed_path,
+    resolve_db_path,
 )
 from nagato_tools.errors import _nagato_error as nagato_error
 from nagato_tools.read import _check_irrelevance_guard
@@ -56,9 +58,12 @@ def _get_context(ctx: Optional[Any] = None) -> Any:
     return get_mock_context(_get_workspace_root(ctx))
 
 
-def _get_semantic_config():
+def _get_semantic_config(ctx: Optional[Any] = None):
     """Get semantic search configuration."""
-    return get_semantic_search_config()
+    config = get_semantic_search_config(ctx=ctx)
+    return replace(
+        config, db_path=str(Path(resolve_db_path(config, _get_workspace_root(ctx))).resolve())
+    )
 
 
 def _normalize_window(start_offset: int, limit: int) -> tuple[int, int]:
@@ -351,7 +356,7 @@ async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int =
         _ctx: Optional session context (injected by facade).    """
     ctx = _get_context(_ctx)
     try:
-        config = _get_semantic_config()
+        config = _get_semantic_config(ctx)
         indexer = SemanticIndexSearch(config={
             "db_path": config.db_path,
             "embedding_model": config.embedding_model,
@@ -519,7 +524,7 @@ async def nagato_rebuild_symbol_db(dir: str = None, _ctx: Optional[Any] = None) 
         _ctx: Optional session context (injected by facade).    """
     ctx = _get_context(_ctx)
     try:
-        config = _get_semantic_config()
+        config = _get_semantic_config(ctx)
         indexer = SemanticIndexSearch(config={
             "db_path": config.db_path,
             "embedding_model": config.embedding_model,
@@ -584,7 +589,7 @@ async def nagato_set_semantic_search_root(path: str, _ctx: Optional[Any] = None)
         persistence_scope = "config base (.nagato/functions_config.json)"
     
     # Immediately reindex synchronously
-    config = _get_semantic_config()
+    config = _get_semantic_config(ctx)
     indexer = SemanticIndexSearch(config={
         "db_path": config.db_path,
         "embedding_model": config.embedding_model,
@@ -622,7 +627,7 @@ async def nagato_sync_file_all(file_rel_path: str, _ctx: Optional[Any] = None) -
     """
     ctx = _get_context(_ctx)
     try:
-        config = _get_semantic_config()
+        config = _get_semantic_config(ctx)
         indexer = SemanticIndexSearch(config={
             "db_path": config.db_path,
             "embedding_model": config.embedding_model,
@@ -651,7 +656,7 @@ async def nagato_sync_directory_all(root_dir: str = ".", _ctx: Optional[Any] = N
     """
     ctx = _get_context(_ctx)
     try:
-        config = _get_semantic_config()
+        config = _get_semantic_config(ctx)
         indexer = SemanticIndexSearch(config={
             "db_path": config.db_path,
             "embedding_model": config.embedding_model,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 import sqlite3
@@ -365,6 +366,11 @@ class SqliteRowEffect:
         db_file.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_file))
         conn.row_factory = sqlite3.Row
+        if importlib.util.find_spec("sqlite_vec") is not None:
+            import sqlite_vec  # vec0 virtual tables are journaled too
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
         return conn
 
     def _fetch_current_row(self, conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:

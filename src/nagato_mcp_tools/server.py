@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+from nagato_tools.config import initialize_workspace_config
 from nagato_tools.ctx_mock import _resolve_session_id, _sanitize_session_id
 from nagato_tools.facade import ToolFacade, get_tool_facade
 try:
@@ -140,6 +141,7 @@ class NagatoMCPServer:
         session_id: str | None = None,
     ) -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
+        initialize_workspace_config(self.workspace_root)
         resolved_session_id = _resolve_session_id(session_id)
         sanitized_session_id = _sanitize_session_id(resolved_session_id)
         if register_workspace:

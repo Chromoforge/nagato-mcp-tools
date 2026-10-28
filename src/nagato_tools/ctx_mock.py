@@ -396,7 +396,7 @@ class MockFSMContext:
             self._read_files[normalized_path] = (content_hash, 0)
             return None
     
-    def track_edit_for_undo(self, file_path: str, old_content: Optional[str] = None, new_content: Optional[str] = None, is_new: bool = False, is_delete: bool = False) -> None:
+    def track_edit_for_undo(self, file_path: str, old_content: Optional[str] = None, new_content: Optional[str] = None, is_new: bool = False, is_delete: bool = False, is_directory: bool = False, created_dirs: Optional[list] = None, graph_effects: Optional[dict] = None) -> None:
         """
         Track an edit for standalone undo.
         
@@ -406,6 +406,9 @@ class MockFSMContext:
             new_content: Content after edit (None for deletions)
             is_new: True if this is a new file creation
             is_delete: True if this is a file deletion
+            is_directory: True if this is a directory creation
+            created_dirs: List of (dir_path, node_id) tuples for implicitly created parent directories
+            graph_effects: Dict with graph changes (nodes_created, edges_created, nodes_deleted, edges_deleted)
         """
         import json
         import time
@@ -418,13 +421,16 @@ class MockFSMContext:
         # filename convention and payload shape stay in lockstep across both
         # writers that share the same .nagato/undo_cache/ directory.
         snapshot = {
-            "schema_version": 1,
+            "schema_version": 2,
             "file": file_path,
             "timestamp": time.time(),
             "is_new": is_new,
             "is_delete": is_delete,
+            "is_directory": is_directory,
             "old_content": old_content,
             "new_content": new_content,
+            "created_dirs": created_dirs or [],
+            "graph_effects": graph_effects or {},
         }
 
         # Save snapshot with unique filename (timestamp + UUID to avoid collisions)
@@ -472,23 +478,40 @@ class MockFSMContext:
             
             file_path = self._workspace_root / snapshot["file"]
             
-            if snapshot["is_new"]:
-                # Was a new file, delete it
-                if file_path.exists():
-                    file_path.unlink()
-                    return f"Redo: Deleted newly created file {snapshot['file']}"
-            elif snapshot["is_delete"]:
-                # Was a deletion, restore file
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(snapshot["old_content"] or "")
-                return f"Redo: Restored deleted file {snapshot['file']}"
+            if snapshot.get("is_directory", False):
+                # Was a directory creation
+                if snapshot["is_new"]:
+                    # Was a new directory, delete it (only if empty)
+                    if file_path.exists() and file_path.is_dir():
+                        try:
+                            file_path.rmdir()  # Only removes if empty
+                            return f"Redo: Deleted newly created directory {snapshot['file']}"
+                        except OSError:
+                            return f"Redo: Cannot delete directory {snapshot['file']} (not empty)"
+                elif snapshot["is_delete"]:
+                    # Was a directory deletion, restore it
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.mkdir(parents=True, exist_ok=True)
+                    return f"Redo: Restored deleted directory {snapshot['file']}"
             else:
-                # Was a modification, restore new content (redo)
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(snapshot["new_content"] or "")
-                return f"Redo: Restored {snapshot['file']} to modified version"
+                # File operations
+                if snapshot["is_new"]:
+                    # Was a new file, delete it
+                    if file_path.exists():
+                        file_path.unlink()
+                        return f"Redo: Deleted newly created file {snapshot['file']}"
+                elif snapshot["is_delete"]:
+                    # Was a deletion, restore file
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(snapshot["old_content"] or "")
+                    return f"Redo: Restored deleted file {snapshot['file']}"
+                else:
+                    # Was a modification, restore new content (redo)
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(snapshot["new_content"] or "")
+                    return f"Redo: Restored {snapshot['file']} to modified version"
             
             # Move snapshot back to undo_dir
             shutil.move(str(latest_redo), str(undo_dir / latest_redo.name))
@@ -509,23 +532,40 @@ class MockFSMContext:
             
             file_path = self._workspace_root / snapshot["file"]
             
-            if snapshot["is_new"]:
-                # Was a new file, delete it
-                if file_path.exists():
-                    file_path.unlink()
-                    results.append(f"Undid creation of {snapshot['file']}")
-            elif snapshot["is_delete"]:
-                # Was a deletion, restore file
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(snapshot["old_content"] or "")
-                results.append(f"Undid deletion of {snapshot['file']}")
+            if snapshot.get("is_directory", False):
+                # Directory operations
+                if snapshot["is_new"]:
+                    # Was a new directory, delete it (only if empty)
+                    if file_path.exists() and file_path.is_dir():
+                        try:
+                            file_path.rmdir()  # Only removes if empty
+                            results.append(f"Undid creation of directory {snapshot['file']}")
+                        except OSError:
+                            results.append(f"Cannot undo directory creation: {snapshot['file']} not empty")
+                elif snapshot["is_delete"]:
+                    # Was a directory deletion, restore it
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.mkdir(parents=True, exist_ok=True)
+                    results.append(f"Undid deletion of directory {snapshot['file']}")
             else:
-                # Was a modification, restore old content
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(snapshot["old_content"] or "")
-                results.append(f"Undid modification of {snapshot['file']}")
+                # File operations
+                if snapshot["is_new"]:
+                    # Was a new file, delete it
+                    if file_path.exists():
+                        file_path.unlink()
+                        results.append(f"Undid creation of {snapshot['file']}")
+                elif snapshot["is_delete"]:
+                    # Was a deletion, restore file
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(snapshot["old_content"] or "")
+                    results.append(f"Undid deletion of {snapshot['file']}")
+                else:
+                    # Was a modification, restore old content
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(snapshot["old_content"] or "")
+                    results.append(f"Undid modification of {snapshot['file']}")
             
             # Move to redo_dir
             shutil.move(str(latest), str(redo_dir / latest.name))

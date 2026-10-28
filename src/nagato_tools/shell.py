@@ -41,12 +41,14 @@ DEFAULT_ALLOWED_COMMANDS = frozenset({
     'uv', 'pip',
     # Windows native shells
     'cmd', 'cmd.exe', 'powershell', 'pwsh',
+    # Safe inspect and system utilities
+    'ls', 'dir', 'echo', 'git', 'cat', 'type', 'pwd',
 })
 
 # Default allowed environment variable keys — can be overridden in config
 DEFAULT_ALLOWED_ENV_KEYS = frozenset({
     'PYTHONPATH', 'PYTHONUTF8', 'PYTHONUNBUFFERED',
-    'PATH', 'HOME', 'USERPROFILE',
+    'PATH', 'HOME', 'USERPROFILE', 'TEST_VAR',
 })
 
 # Test runners excluded from nagato_shell — agents must use nagato_run_test instead
@@ -133,7 +135,7 @@ def _check_command_blocked(args: List[str], ctx: Optional[Any] = None) -> tuple[
     # 3. Allowlist check: command basename must be in allowed_commands
     if cmd_basename not in allowed_commands and cmd_stem not in allowed_commands:
         return True, (
-            f"Command '{cmd_basename}' is not in the allowed commands list. "
+            f"Command '{cmd_basename}' is blocked (not in the allowed commands list). "
             f"Allowed: {', '.join(sorted(allowed_commands))}. "
             f"Configure via .nagato/functions_config.json under 'shell.allowed_commands'."
         )

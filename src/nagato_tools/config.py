@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 DEFAULT_IGNORED_DIRS = (
     ".venv", "venv", "env", ".git", "__pycache__", ".pytest_cache",
     ".egg-info", "rpgproxy.egg-info", "dist", "build",
-    "playbooks_poc", "playbooks_challenge",
 )
 
 
@@ -89,12 +88,64 @@ class LawConfig:
 
 
 @dataclass
+class AnimeConfig:
+    """Configuration for local Anime metadata vector database."""
+    db_path: str = ""  # If empty, defaults to ~/.nagato/anime/hybrid.db
+    default_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    models: list[str] = field(default_factory=lambda: [
+        "sentence-transformers/all-MiniLM-L6-v2",
+        "intfloat/multilingual-e5-small",
+        "BAAI/bge-small-en-v1.5",
+    ])
+    packs: dict[str, list[str]] = field(default_factory=lambda: {
+        "all": [],
+        "tv": ["TV"],
+        "movie": ["MOVIE"],
+        "ova": ["OVA"],
+        "ona": ["ONA"],
+        "special": ["SPECIAL"],
+        "finished": ["FINISHED"],
+        "ongoing": ["ONGOING"],
+        "upcoming": ["UPCOMING"],
+        "2020s": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+        "2010s": ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019"],
+        "2000s": ["2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009"],
+        "1990s": ["1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999"],
+        "1980s": ["1980", "1981", "1982", "1983", "1984", "1985", "1986", "1987", "1988", "1989"],
+        "action": ["action"],
+        "adventure": ["adventure"],
+        "comedy": ["comedy"],
+        "drama": ["drama"],
+        "fantasy": ["fantasy"],
+        "sci-fi": ["sci-fi", "science fiction"],
+        "slice-of-life": ["slice of life", "slice-of-life"],
+        "romance": ["romance"],
+        "horror": ["horror"],
+        "mystery": ["mystery"],
+        "psychological": ["psychological"],
+        "supernatural": ["supernatural"],
+        "mecha": ["mecha"],
+        "sports": ["sports"],
+        "music": ["music"],
+        "isekai": ["isekai"],
+        "shounen": ["shounen"],
+        "shoujo": ["shoujo"],
+        "seinen": ["seinen"],
+        "josei": ["josei"],
+    })
+    offline_db_url: str = "https://github.com/manami-project/anime-offline-database/releases/download/{tag}/anime-offline-database.jsonl.zst"
+    anilist_graphql_url: str = "https://graphql.anilist.co"
+    kitsu_api_url: str = "https://kitsu.io/api/edge"
+
+
+@dataclass
 class FunctionsConfig:
     """Root configuration for all functions_internal modules."""
     semantic_search: SemanticSearchConfig = field(default_factory=SemanticSearchConfig)
     lint: LintConfig = field(default_factory=LintConfig)
     wikipedia: WikipediaConfig = field(default_factory=WikipediaConfig)
     law: LawConfig = field(default_factory=LawConfig)
+    anime: AnimeConfig = field(default_factory=AnimeConfig)
     ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     insight: dict = field(default_factory=dict)
     tool_token_limits: dict[str, Any] = field(default_factory=lambda: {
@@ -103,9 +154,8 @@ class FunctionsConfig:
         "web": 4000
     })
     tool_filtering: dict = field(default_factory=lambda: {
-        "enforce_insight_only": False,  # Insight is opt-in for standalone; only true when --include-insight used
         "denied_tools": ["nagato_shell", "nagato_upload", "nagato_is_agent_running"]
-    })  # allowed_tools, denied_tools, allowed_categories, enforce_insight_only
+    })  # allowed_tools, denied_tools, allowed_categories
     allowed_roots: list[str] = field(default_factory=list)  # Whitelist of additional workspace roots/directories
     denied_paths: list[str] = field(default_factory=list)  # Hard access blocklist (e.g. [".env", "secrets/"])
 
@@ -163,6 +213,56 @@ class FunctionsConfig:
                     "cases_bshg": ["bsg"],
                 }),
             )
+        if "anime" in data and isinstance(data["anime"], dict):
+            anime_data = data["anime"]
+            config.anime = AnimeConfig(
+                db_path=anime_data.get("db_path", ""),
+                default_model=anime_data.get("default_model", "sentence-transformers/all-MiniLM-L6-v2"),
+                models=anime_data.get("models", [
+                    "sentence-transformers/all-MiniLM-L6-v2",
+                    "intfloat/multilingual-e5-small",
+                    "BAAI/bge-small-en-v1.5",
+                ]),
+                packs=anime_data.get("packs", {
+                    "all": [],
+                    "tv": ["TV"],
+                    "movie": ["MOVIE"],
+                    "ova": ["OVA"],
+                    "ona": ["ONA"],
+                    "special": ["SPECIAL"],
+                    "finished": ["FINISHED"],
+                    "ongoing": ["ONGOING"],
+                    "upcoming": ["UPCOMING"],
+                    "2020s": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+                    "2010s": ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019"],
+                    "2000s": ["2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009"],
+                    "1990s": ["1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999"],
+                    "1980s": ["1980", "1981", "1982", "1983", "1984", "1985", "1986", "1987", "1988", "1989"],
+                    "action": ["action"],
+                    "adventure": ["adventure"],
+                    "comedy": ["comedy"],
+                    "drama": ["drama"],
+                    "fantasy": ["fantasy"],
+                    "sci-fi": ["sci-fi", "science fiction"],
+                    "slice-of-life": ["slice of life", "slice-of-life"],
+                    "romance": ["romance"],
+                    "horror": ["horror"],
+                    "mystery": ["mystery"],
+                    "psychological": ["psychological"],
+                    "supernatural": ["supernatural"],
+                    "mecha": ["mecha"],
+                    "sports": ["sports"],
+                    "music": ["music"],
+                    "isekai": ["isekai"],
+                    "shounen": ["shounen"],
+                    "shoujo": ["shoujo"],
+                    "seinen": ["seinen"],
+                    "josei": ["josei"],
+                }),
+                offline_db_url=anime_data.get("offline_db_url", "https://github.com/manami-project/anime-offline-database/releases/download/{tag}/anime-offline-database.jsonl.zst"),
+                anilist_graphql_url=anime_data.get("anilist_graphql_url", "https://graphql.anilist.co"),
+                kitsu_api_url=anime_data.get("kitsu_api_url", "https://kitsu.io/api/edge"),
+            )
         if "semantic_search" in data:
             ss_data = data["semantic_search"]
             config.semantic_search = SemanticSearchConfig(
@@ -201,6 +301,27 @@ def get_workspace_root() -> Path:
 def get_config_path(ctx: Optional[Any] = None) -> Path:
     """Get the path to the functions config file."""
     return _get_workspace_root(ctx) / ".nagato" / "functions_config.json"
+
+
+def initialize_workspace_config(workspace_root: Path) -> None:
+    """Create missing workspace configurations without replacing existing settings."""
+    import yaml
+
+    config_dir = Path(workspace_root) / ".nagato"
+    config = load_functions_config(config_dir / "functions_config.json")
+    yaml_path = config_dir / "config.yaml"
+    if yaml_path.exists():
+        return
+    defaults = {
+        "fsm": {"project_root": ".", "workspace_root": "."},
+        "insight": config.insight,
+    }
+    try:
+        stream = yaml_path.open("x", encoding="utf-8")
+    except FileExistsError:
+        return
+    with stream:
+        yaml.safe_dump(defaults, stream, sort_keys=False)
 
 
 def _write_functions_config(config: FunctionsConfig, config_path: Path) -> None:
@@ -418,6 +539,120 @@ def get_insight_display_config(config_path: Optional[Path] = None) -> dict:
     }
 
 
+def get_anime_config(config_path: Optional[Path] = None) -> dict:
+    """Get the anime configuration with sensible defaults.
+    
+    Returns dict with keys: enabled, sync_tools, default_model, models, packs, offline_db_url, anilist_graphql_url, kitsu_api_url.
+    Checks .nagato/functions_config.json first (standalone / project override), then falls back to defaults.
+    """
+    cfg = load_functions_config(config_path)
+    if cfg.anime:
+        defaults = {
+            "enabled": False,
+            "sync_tools": False,
+            "default_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "models": [
+                "sentence-transformers/all-MiniLM-L6-v2",
+                "intfloat/multilingual-e5-small",
+                "BAAI/bge-small-en-v1.5",
+            ],
+            "packs": {
+                "all": [],
+                "tv": ["TV"],
+                "movie": ["MOVIE"],
+                "ova": ["OVA"],
+                "ona": ["ONA"],
+                "special": ["SPECIAL"],
+                "finished": ["FINISHED"],
+                "ongoing": ["ONGOING"],
+                "upcoming": ["UPCOMING"],
+                "2020s": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+                "2010s": ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019"],
+                "2000s": ["2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009"],
+                "1990s": ["1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999"],
+                "1980s": ["1980", "1981", "1982", "1983", "1984", "1985", "1986", "1987", "1988", "1989"],
+                "action": ["action"],
+                "adventure": ["adventure"],
+                "comedy": ["comedy"],
+                "drama": ["drama"],
+                "fantasy": ["fantasy"],
+                "sci-fi": ["sci-fi", "science fiction"],
+                "slice-of-life": ["slice of life", "slice-of-life"],
+                "romance": ["romance"],
+                "horror": ["horror"],
+                "mystery": ["mystery"],
+                "psychological": ["psychological"],
+                "supernatural": ["supernatural"],
+                "mecha": ["mecha"],
+                "sports": ["sports"],
+                "music": ["music"],
+                "isekai": ["isekai"],
+                "shounen": ["shounen"],
+                "shoujo": ["shoujo"],
+                "seinen": ["seinen"],
+                "josei": ["josei"],
+            },
+            "offline_db_url": "https://github.com/manami-project/anime-offline-database/releases/download/{tag}/anime-offline-database.jsonl.zst",
+            "anilist_graphql_url": "https://graphql.anilist.co",
+            "kitsu_api_url": "https://kitsu.io/api/edge",
+        }
+        res = dict(defaults)
+        res.update(cfg.anime)
+        res["enabled"] = bool(res.get("enabled", False))
+        res["sync_tools"] = bool(res.get("sync_tools", False))
+        return res
+
+    return {
+        "enabled": False,
+        "sync_tools": False,
+        "default_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "models": [
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "intfloat/multilingual-e5-small",
+            "BAAI/bge-small-en-v1.5",
+        ],
+        "packs": {
+            "all": [],
+            "tv": ["TV"],
+            "movie": ["MOVIE"],
+            "ova": ["OVA"],
+            "ona": ["ONA"],
+            "special": ["SPECIAL"],
+            "finished": ["FINISHED"],
+            "ongoing": ["ONGOING"],
+            "upcoming": ["UPCOMING"],
+            "2020s": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+            "2010s": ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019"],
+            "2000s": ["2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009"],
+            "1990s": ["1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999"],
+            "1980s": ["1980", "1981", "1982", "1983", "1984", "1985", "1986", "1987", "1988", "1989"],
+            "action": ["action"],
+            "adventure": ["adventure"],
+            "comedy": ["comedy"],
+            "drama": ["drama"],
+            "fantasy": ["fantasy"],
+            "sci-fi": ["sci-fi", "science fiction"],
+            "slice-of-life": ["slice of life", "slice-of-life"],
+            "romance": ["romance"],
+            "horror": ["horror"],
+            "mystery": ["mystery"],
+            "psychological": ["psychological"],
+            "supernatural": ["supernatural"],
+            "mecha": ["mecha"],
+            "sports": ["sports"],
+            "music": ["music"],
+            "isekai": ["isekai"],
+            "shounen": ["shounen"],
+            "shoujo": ["shoujo"],
+            "seinen": ["seinen"],
+            "josei": ["josei"],
+        },
+        "offline_db_url": "https://github.com/manami-project/anime-offline-database/releases/download/{tag}/anime-offline-database.jsonl.zst",
+        "anilist_graphql_url": "https://graphql.anilist.co",
+        "kitsu_api_url": "https://kitsu.io/api/edge",
+    }
+
+
 def get_force_insight_config() -> dict:
     """Get the force insight gating configuration."""
     import importlib
@@ -486,7 +721,6 @@ def get_standalone_config() -> dict:
     - allowed_tools: List[str] — allowlist of tool names (e.g., ["nagato_read_file"])
     - denied_tools: List[str] — denylist of tool names (e.g., ["nagato_shell"])
     - allowed_categories: List[str] — category-level allowlist (e.g., ["READ", "SEARCH"])
-    - enforce_insight_only: bool — If true, only Node-ID-based tools are registered
     
     All keys are optional. Empty dict means no filtering.
     """
@@ -775,7 +1009,6 @@ def get_standalone_config() -> dict:
     Loads from .nagato/functions_config.json under the 'tool_filtering' key.
     
     Returns a dict with keys:
-    - enforce_insight_only: bool — If true, only Node-ID-based tools are registered (hard switch)
     - allowed_tools: List[str] — allowlist of tool names (e.g., ["nagato_read_file"])
     - denied_tools: List[str] — denylist of tool names (e.g., ["nagato_shell"])
     - allowed_categories: List[str] — category-level allowlist (e.g., ["READ", "SEARCH"])

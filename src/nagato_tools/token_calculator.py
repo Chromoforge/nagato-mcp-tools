@@ -163,6 +163,24 @@ def get_budget_breakdown(context: "NagatoFSMContext", messages: Optional[List[Di
     )
 
 
+def get_token_count(text: str, model_name: str = "gpt-4o") -> int:
+    """
+    Get token count for text using tiktoken.
+    
+    Args:
+        text: Text to count tokens for
+        model_name: Model name for encoding selection (default: gpt-4o)
+        
+    Returns:
+        Token count
+    """
+    try:
+        encoding = tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    return len(encoding.encode(text))
+
+
 def estimate_completion_tokens(text: str, model_name: str = "", provider: str = "unknown") -> tuple[int, str]:
     """
     Estimate completion tokens from response text.

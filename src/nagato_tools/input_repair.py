@@ -79,7 +79,7 @@ def repair_malformed_json(payload: str) -> Optional[Dict[str, Any]]:
     repaired = re.sub(r"(?<!\\)'(?![a-zA-Z_])", '"', repaired)
     
     # Remove trailing commas before } or ]
-    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    repaired = re.sub(r",\s*([}\]])", r"\g<1>", repaired)
     
     # Replace Python True/False/None with JSON true/false/null
     repaired = re.sub(r"\bTrue\b", "true", repaired)
