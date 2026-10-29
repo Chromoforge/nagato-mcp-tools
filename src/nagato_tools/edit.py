@@ -198,7 +198,7 @@ async def nagato_edit(
             if rolled:
                 return rolled
 
-        lint_result = await nagato_lint(file)
+        lint_result = await nagato_lint(file, _ctx)
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
@@ -294,7 +294,7 @@ async def nagato_edit(
             if rolled:
                 return rolled
 
-        lint_result = await nagato_lint(file)
+        lint_result = await nagato_lint(file, _ctx)
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
@@ -368,7 +368,7 @@ async def nagato_edit_lines(
             if rolled:
                 return rolled
 
-        lint_result = await nagato_lint(file)
+        lint_result = await nagato_lint(file, _ctx)
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
@@ -529,7 +529,7 @@ async def nagato_edit_lines(
             if rolled:
                 return rolled
 
-        lint_result = await nagato_lint(file)
+        lint_result = await nagato_lint(file, _ctx)
         if "SUCCESS" in lint_result:
             msg = _get_completion_message(ctx)
             notice = "[INSIGHT: refreshing knowledge graph for this file in background]\n" if sync_queued else ""
