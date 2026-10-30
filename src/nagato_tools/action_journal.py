@@ -167,6 +167,7 @@ class FileEffect:
         after_exists: bool = False,
         after_content: Optional[str] = None,
         after_hash: Optional[str] = None,
+        is_directory: bool = False,
     ):
         self.file_path = file_path.replace("\\", "/")
         self.namespace = namespace
@@ -176,6 +177,7 @@ class FileEffect:
         self.after_exists = after_exists
         self.after_content = after_content
         self.after_hash = after_hash or (_compute_sha256(after_content) if after_content is not None else None)
+        self.is_directory = is_directory
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -188,6 +190,7 @@ class FileEffect:
             "after_exists": self.after_exists,
             "after_content": self.after_content,
             "after_hash": self.after_hash,
+            "is_directory": self.is_directory,
         }
 
     @classmethod
@@ -201,6 +204,7 @@ class FileEffect:
             after_exists=data.get("after_exists", False),
             after_content=data.get("after_content"),
             after_hash=data.get("after_hash"),
+            is_directory=data.get("is_directory", False),
         )
 
     def _resolve_target(self, workspace_root: Path, session_id: Optional[str] = None) -> Path:
@@ -213,44 +217,64 @@ class FileEffect:
         # Check conflict against after state
         if self.after_exists:
             if not target.exists():
-                raise UndoConflictError(f"UNDO_CONFLICT: File {self.file_path} expected to exist for undo, but not found.")
-            current_content = target.read_text(encoding="utf-8", errors="replace")
-            current_hash = _compute_sha256(current_content)
-            if self.after_hash and current_hash != self.after_hash:
-                raise UndoConflictError(f"UNDO_CONFLICT: File {self.file_path} content hash mismatch before undo.")
+                raise UndoConflictError(f"UNDO_CONFLICT: File/directory {self.file_path} expected to exist for undo, but not found.")
+            if not self.is_directory and not target.is_dir():
+                current_content = target.read_text(encoding="utf-8", errors="replace")
+                current_hash = _compute_sha256(current_content)
+                if self.after_hash and current_hash != self.after_hash:
+                    raise UndoConflictError(f"UNDO_CONFLICT: File {self.file_path} content hash mismatch before undo.")
         else:
             if target.exists():
-                raise UndoConflictError(f"UNDO_CONFLICT: File {self.file_path} expected not to exist, but found on disk.")
+                raise UndoConflictError(f"UNDO_CONFLICT: File/directory {self.file_path} expected not to exist, but found on disk.")
 
         # Revert to before state
         if self.before_exists:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(self.before_content or "", encoding="utf-8", newline="")
+            if self.is_directory:
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(self.before_content or "", encoding="utf-8", newline="")
         else:
             if target.exists():
-                target.unlink()
+                if self.is_directory or target.is_dir():
+                    try:
+                        target.rmdir()
+                    except OSError:
+                        pass
+                else:
+                    target.unlink()
 
     def apply_redo(self, workspace_root: Path, session_id: Optional[str] = None) -> None:
         target = self._resolve_target(workspace_root, session_id)
         # Check conflict against before state
         if self.before_exists:
             if not target.exists():
-                raise UndoConflictError(f"REDO_CONFLICT: File {self.file_path} expected to exist for redo, but not found.")
-            current_content = target.read_text(encoding="utf-8", errors="replace")
-            current_hash = _compute_sha256(current_content)
-            if self.before_hash and current_hash != self.before_hash:
-                raise UndoConflictError(f"REDO_CONFLICT: File {self.file_path} content hash mismatch before redo.")
+                raise UndoConflictError(f"REDO_CONFLICT: File/directory {self.file_path} expected to exist for redo, but not found.")
+            if not self.is_directory and not target.is_dir():
+                current_content = target.read_text(encoding="utf-8", errors="replace")
+                current_hash = _compute_sha256(current_content)
+                if self.before_hash and current_hash != self.before_hash:
+                    raise UndoConflictError(f"REDO_CONFLICT: File {self.file_path} content hash mismatch before redo.")
         else:
             if target.exists():
-                raise UndoConflictError(f"REDO_CONFLICT: File {self.file_path} expected not to exist, but found on disk.")
+                raise UndoConflictError(f"REDO_CONFLICT: File/directory {self.file_path} expected not to exist, but found on disk.")
 
         # Reapply after state
         if self.after_exists:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(self.after_content or "", encoding="utf-8", newline="")
+            if self.is_directory:
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(self.after_content or "", encoding="utf-8", newline="")
         else:
             if target.exists():
-                target.unlink()
+                if self.is_directory or target.is_dir():
+                    try:
+                        target.rmdir()
+                    except OSError:
+                        pass
+                else:
+                    target.unlink()
 
 
 class FsmStateEffect:
@@ -627,14 +651,16 @@ class ActionContext:
         is_new: bool = False,
         is_delete: bool = False,
         namespace: str = "workspace",
+        is_directory: bool = False,
     ) -> None:
         effect = FileEffect(
             file_path=file_path,
             namespace=namespace,
-            before_exists=not is_new and before_content is not None,
+            before_exists=not is_new and (before_content is not None or is_directory),
             before_content=before_content,
-            after_exists=not is_delete and after_content is not None,
+            after_exists=not is_delete and (after_content is not None or is_directory),
             after_content=after_content,
+            is_directory=is_directory,
         )
         self.add_effect(effect)
 

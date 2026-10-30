@@ -723,6 +723,15 @@ async def nagato_create_dir(
 
     try:
         target_dir.mkdir(parents=parents, exist_ok=exist_ok)
+
+        # Track for standalone and action journal undo
+        ctx = _get_context(_ctx)
+        if hasattr(ctx, 'track_edit_for_undo'):
+            ctx.track_edit_for_undo(dir, old_content=None, new_content="", is_new=True, is_directory=True)
+        action_context = getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
+        if action_context is not None and hasattr(action_context, "record_file_change"):
+            action_context.record_file_change(dir, before_content=None, after_content="", is_new=True, is_delete=False, is_directory=True)
+
         return f"SUCCESS: Directory {dir} created."
     except Exception as e:
         return nagato_error(str(e), tool="nagato_create_dir")

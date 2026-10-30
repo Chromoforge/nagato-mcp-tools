@@ -48,6 +48,7 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 - **Shell Tool Default Allowlist** (`src/nagato_tools/shell.py`): Added safe inspect and utility commands (`ls`, `dir`, `echo`, `git`, `cat`, `type`) to `DEFAULT_ALLOWED_COMMANDS`.
 - **Semantic Indexer Access in Edit Tool** (`src/nagato_tools/edit.py`): Restored `_get_semantic_indexer()` helper to maintain single-pass symbol table updates on file edits.
 - **Git Tool Diff Output** (`src/nagato_tools/git.py`): Replaced hardcoded `diff --name-only HEAD~1` with flexible `git diff` supporting optional arguments (e.g. revisions, pathspecs, flags) and returning actual diff hunks instead of only filenames.
+- **Edit Tool Lint Context Propagation** (`src/nagato_tools/edit.py`): Updated `nagato_lint` calls in `nagato_edit` and `nagato_edit_lines` to pass the MCP context (`_ctx`) parameter, ensuring lint operations have access to workspace context for cross-workspace path resolution and configuration.
 - **Sync Rewrites for Workspace Registry** (`sync_tools.py`): Added regex import rewrites mapping `fsm.workspace_registry` to `nagato_tools.workspace_registry` during standalone tool builds.
 - **Standalone Facade Category Resolution** (`src/nagato_tools/facade.py`): All registered standalone tools now cleanly resolve to their respective `ToolCategory` (no UNKNOWN entries).
 

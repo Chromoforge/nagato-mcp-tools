@@ -35,6 +35,11 @@ def nagato_write_plan(path: str, content: str, _ctx: Optional[Any] = None) -> st
     # Resolve workspace root
     workspace_root = _get_workspace_root(_ctx)
     plans_dir = workspace_root / ".github" / "plans"
+
+    # Normalize path if already prefixed with .github/plans
+    clean_path = path.replace("\\", "/").lstrip("/")
+    if clean_path.startswith(".github/plans/"):
+        path = clean_path[len(".github/plans/"):]
     
     # Validate path is under .github/plans/ (OWASP path traversal guard)
     try:
