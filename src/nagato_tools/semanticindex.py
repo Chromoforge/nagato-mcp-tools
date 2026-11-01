@@ -3,10 +3,38 @@ import logging
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def mark_semantic_files_stale(paths: list[str], ctx: Optional[Any] = None) -> None:
+    from nagato_tools.config import get_semantic_search_config, resolve_db_path
+
+    if not paths:
+        return
+    config = get_semantic_search_config(ctx=ctx)
+    workspace_root = _get_workspace_root(ctx)
+    db_path = Path(resolve_db_path(config, workspace_root))
+    if not db_path.exists():
+        return
+    stored_paths = []
+    for path in paths:
+        candidate = Path(path)
+        if candidate.is_absolute() and candidate.is_relative_to(workspace_root):
+            candidate = candidate.relative_to(workspace_root)
+        stored_paths.append((candidate.as_posix(),))
+    with closing(sqlite3.connect(str(db_path))) as connection, connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'indexed_file_meta'"
+        ).fetchone()
+        if table:
+            connection.executemany(
+                "UPDATE indexed_file_meta SET mtime = -1 WHERE file_path = ?",
+                stored_paths,
+            )
 
 # Global thread pool for CPU-intensive embedding work (avoids blocking server thread)
 _embedding_executor: ThreadPoolExecutor | None = None
@@ -554,21 +582,21 @@ class SemanticIndexSearch:
         with abs_path.open("r", encoding="utf-8", errors="replace") as f:
             source_code = f.read()
 
-        try:
-            tree = ast.parse(source_code)
-        except SyntaxError as e:
-            logger.warning(f"Syntax error in {stored_path}: {str(e)}")
-            return f"Skipped: syntax error in {stored_path}"
-        except Exception as e:
-            logger.error(f"Unexpected AST parsing error in {stored_path}: {str(e)}")
-            raise  # Re-raise to ensure the error is not silently ignored
-
-        # Check if this is a Python file for AST-based chunking
-        is_python_file = abs_path.suffix == ".py"
+        # Use analyzer registry for all file types
+        from nagato_tools.insight_file_analyzers import get_analyzer_registry
+        registry = get_analyzer_registry()
+        analysis = registry.analyze_file(source_code, stored_path, abs_path)
         
+        if analysis.errors:
+            for err in analysis.errors:
+                logger.warning(f"Analysis error in {stored_path}: {err}")
+            # Continue with partial analysis rather than skipping
+
         # 1. Fire AST extractions for symbols and calls (Python only)
         extracted_sigs = []
         call_data = {"calls": {}, "called_from": {}}
+        is_python_file = abs_path.suffix == ".py"
+        
         if is_python_file:
             try:
                 sig_extractor = SignatureExtractor(str(abs_path))
@@ -585,7 +613,6 @@ class SemanticIndexSearch:
         max_chunk_chars = self._get_max_chunk_chars()
         
         # Build a map from qualname to Insight node_id for linking
-        # This will be populated after Insight sync, but we can try to get it from the store
         insight_node_ids = {}
         try:
             from nagato_tools.config import get_workspace_root
@@ -599,66 +626,69 @@ class SemanticIndexSearch:
         except Exception:
             pass  # Insight not available or no nodes yet
         
-        if is_python_file:
-            # AST-based chunking for Python files
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    qualname = node.name
-                    # Try to get qualname from signatures
-                    for sig in extracted_sigs:
-                        if sig.get("symbol") == node.name and sig.get("qualname"):
-                            qualname = sig["qualname"]
-                            break
-                    
-                    chunk_type = "function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
-                    node_id = insight_node_ids.get(qualname, "")
-                    
-                    if getattr(self, "docstring_only", False):
-                        # Docstring-only mode: embed only the docstring
-                        doc = ast.get_docstring(node)
-                        if doc:
-                            chunks.append(doc)
+        # Use analyzer results for chunking (works for all file types)
+        for symbol in analysis.symbols:
+            qualname = symbol.qualname
+            chunk_type = "function" if symbol.kind in ("function", "method") else "class"
+            node_id = insight_node_ids.get(qualname, "")
+            
+            if getattr(self, "docstring_only", False):
+                if symbol.doc:
+                    chunks.append(symbol.doc)
+                    metas.append({
+                        "file": stored_path,
+                        "line": symbol.line_start,
+                        "name": symbol.name,
+                        "symbol_name": qualname,
+                        "node_id": node_id,
+                        "chunk_type": chunk_type,
+                    })
+            else:
+                # Extract source segment for this symbol
+                lines = source_code.splitlines(keepends=True)
+                if symbol.line_start > 0 and symbol.line_end >= symbol.line_start:
+                    segment = ''.join(lines[symbol.line_start - 1:symbol.line_end])
+                    if segment:
+                        if len(segment) <= max_chunk_chars:
+                            chunk_texts = [segment]
+                        else:
+                            chunk_texts = _split_large_chunk_ast_aware(source_code, None, max_chunk_chars, segment)
+                        
+                        for chunk_text in chunk_texts:
+                            chunks.append(chunk_text)
                             metas.append({
                                 "file": stored_path,
-                                "line": node.lineno,
-                                "name": node.name,
+                                "line": symbol.line_start,
+                                "name": symbol.name,
                                 "symbol_name": qualname,
                                 "node_id": node_id,
                                 "chunk_type": chunk_type,
                             })
-                    else:
-                        # Full code mode (default): embed the entire function/class body
-                        segment = ast.get_source_segment(source_code, node)
-                        if segment:
-                            # Use AST-aware splitting for large chunks
-                            if len(segment) <= max_chunk_chars:
-                                chunk_texts = [segment]
-                            else:
-                                chunk_texts = _split_large_chunk_ast_aware(source_code, node, max_chunk_chars)
-                            
-                            for chunk_text in chunk_texts:
-                                chunks.append(chunk_text)
-                                metas.append({
-                                    "file": stored_path,
-                                    "line": node.lineno,
-                                    "name": node.name,
-                                    "symbol_name": qualname,
-                                    "node_id": node_id,
-                                    "chunk_type": chunk_type,
-                                })
-        else:
-            # Graceful fallback: sliding-window chunking for non-Python files
-            # Use a simple line-based sliding window
+        
+        # Also add any chunks from the analyzer (e.g., standalone chunks for non-symbol content)
+        for chunk in analysis.chunks:
+            chunks.append(chunk.text)
+            metas.append({
+                "file": stored_path,
+                "line": chunk.line_start,
+                "name": chunk.symbol_name or f"chunk_{chunk.line_start}",
+                "symbol_name": chunk.qualname,
+                "node_id": chunk.node_id,
+                "chunk_type": chunk.chunk_type,
+            })
+        
+        # If no chunks from analyzer, use sliding-window fallback
+        if not chunks:
             lines = source_code.splitlines(keepends=True)
-            window_size = max(1, max_chunk_chars // 80)  # Approximate lines per chunk
-            overlap = max(1, window_size // 4)  # 25% overlap
+            window_size = max(1, max_chunk_chars // 80)
+            overlap = max(1, window_size // 4)
             
             for i in range(0, len(lines), window_size - overlap):
                 chunk_lines = lines[i:i + window_size]
                 if not chunk_lines:
                     break
                 chunk_text = ''.join(chunk_lines)
-                if chunk_text.strip():  # Only add non-empty chunks
+                if chunk_text.strip():
                     chunks.append(chunk_text)
                     metas.append({
                         "file": stored_path,
@@ -866,19 +896,46 @@ class SemanticIndexSearch:
         with target_file.open("r", encoding="utf-8", errors="replace") as f:
             source_code = f.read()
 
-        try:
-            ast.parse(source_code)
-        except SyntaxError:
-            return f"Skipped: syntax error in {file_rel_path}"
+        # Use analyzer registry for all file types
+        from nagato_tools.insight_file_analyzers import get_analyzer_registry
+        registry = get_analyzer_registry()
+        analysis = registry.analyze_file(source_code, file_rel_path, target_file)
+        
+        if analysis.errors:
+            for err in analysis.errors:
+                logger.warning(f"Analysis error in {file_rel_path}: {err}")
+            # Continue with partial analysis rather than skipping
 
-        try:
-            sig_extractor = SignatureExtractor(str(target_file))
-            extracted_sigs = sig_extractor.extract()
-
-            cg_builder = CallgraphBuilder(str(target_file))
-            call_data = cg_builder.build()
-        except Exception as e:
-            return f"AST analysis failed for {file_rel_path}: {str(e)}"
+        # 1. Fire AST extractions for symbols and calls (Python only)
+        extracted_sigs = []
+        call_data = {"calls": {}, "called_from": {}}
+        is_python_file = target_file.suffix == ".py"
+        
+        if is_python_file:
+            try:
+                sig_extractor = SignatureExtractor(str(target_file))
+                extracted_sigs = sig_extractor.extract()
+                
+                cg_builder = CallgraphBuilder(str(target_file))
+                call_data = cg_builder.build()
+            except Exception as e:
+                return f"AST analysis failed for {file_rel_path}: {str(e)}"
+        else:
+            # For non-Python files, use analyzer symbols and references
+            for symbol in analysis.symbols:
+                extracted_sigs.append({
+                    "symbol": symbol.name,
+                    "kind": symbol.kind,
+                    "line": symbol.line_start,
+                    "decorators": symbol.decorators,
+                    "args": [{"name": arg, "annotation": "Any"} for arg in symbol.args],
+                    "returns": symbol.returns,
+                    "doc": symbol.doc,
+                })
+            for ref in analysis.references:
+                if ref.kind == "CALLS":
+                    caller = ref.source_qualname or "<module>"
+                    call_data["calls"].setdefault(caller, []).append(ref.target)
 
         with self.conn:
             cursor = self.conn.cursor()
@@ -1117,7 +1174,8 @@ class SemanticIndexSearch:
             from nagato_tools.insight_store import InsightStore
 
             store = InsightStore(
-                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None),
+                action_context=getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
             )
             try:
                 bridge = ASTInsightBridge(
@@ -1238,7 +1296,8 @@ class SemanticIndexSearch:
             from nagato_tools.insight_models import NodeType, RelationType
             
             store = InsightStore(
-                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+                workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None),
+                action_context=getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
             )
             try:
                 bridge = ASTInsightBridge(
@@ -1329,7 +1388,8 @@ class SemanticIndexSearch:
                 from nagato_tools.insight_ast_bridge import ASTInsightBridge
                 
                 store = InsightStore(
-                    workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None)
+                    workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None),
+                    action_context=getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
                 )
                 try:
                     bridge = ASTInsightBridge(
@@ -1393,7 +1453,7 @@ class SemanticIndexSearch:
                           progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
         """
         Full rebuild of the SQLite and vector index.
-        Deletes the relevant tables and re-indexes all found Python files.
+        Deletes the relevant tables and re-indexes all found supported files.
         
         Args:
             target_dir: Optional directory to rebuild (relative to workspace root)
@@ -1418,8 +1478,13 @@ class SemanticIndexSearch:
             # Use the resolved semantic search root (respects session override, config, fallback)
             scan_root = resolve_semantic_search_root(ctx, workspace_root)
 
-        # Collect Python files to process
-        python_files = []
+        # Get all supported extensions from analyzer registry
+        from nagato_tools.insight_file_analyzers import get_analyzer_registry
+        registry = get_analyzer_registry()
+        supported_extensions = set(registry.get_supported_extensions())
+        
+        # Collect supported files to process
+        files_to_process = []
         ignored_dirs = get_ignored_dirs(ctx=ctx)
         semantic_config = get_semantic_search_config(ctx=ctx)
         search_dirs = semantic_config.search_dirs if semantic_config else []
@@ -1443,7 +1508,12 @@ class SemanticIndexSearch:
                 if search_dir_name in ignored_dirs:
                     continue
                 
-                for file_path in search_path.rglob("*.py"):
+                for file_path in search_path.rglob("*"):
+                    if not file_path.is_file():
+                        continue
+                    ext = file_path.suffix.lower()
+                    if ext not in supported_extensions:
+                        continue
                     # In whitelist mode, we don't apply ignored_dirs to the whitelisted paths themselves.
                     # The whitelist takes precedence. We only filter out hidden dirs (starting with .)
                     if scan_root.is_relative_to(workspace_root):
@@ -1457,10 +1527,15 @@ class SemanticIndexSearch:
                     # Only skip hidden directories (starting with .)
                     if any(part.startswith(".") for part in parts):
                         continue
-                    python_files.append(file_path)
+                    files_to_process.append(file_path)
         else:
             # Blacklist mode (default): scan everything except ignored_dirs
-            for file_path in scan_root.rglob("*.py"):
+            for file_path in scan_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                ext = file_path.suffix.lower()
+                if ext not in supported_extensions:
+                    continue
                 # For files under workspace_root, check ignored_dirs using workspace-relative parts
                 # For external files, check ignored_dirs using parts relative to scan_root
                 if scan_root.is_relative_to(workspace_root):
@@ -1474,12 +1549,12 @@ class SemanticIndexSearch:
                     
                 if any(part in ignored_dirs or part.startswith(".") for part in parts):
                     continue
-                python_files.append(file_path)
+                files_to_process.append(file_path)
         
         # Delete existing data for these files
         with self.conn:
             cursor = self.conn.cursor()
-            for file_path in python_files:
+            for file_path in files_to_process:
                 try:
                     if scan_root.is_relative_to(workspace_root):
                         file_rel_path = str(file_path.relative_to(workspace_root).as_posix())
@@ -1500,8 +1575,8 @@ class SemanticIndexSearch:
 
         indexed_count = 0
         error_count = 0
-        total_files = len(python_files)
-        for i, file_path in enumerate(python_files):
+        total_files = len(files_to_process)
+        for i, file_path in enumerate(files_to_process):
             try:
                 if scan_root.is_relative_to(workspace_root):
                     file_rel_path = str(file_path.relative_to(workspace_root).as_posix())
@@ -1537,9 +1612,9 @@ class SemanticIndexSearch:
             progress_callback: Optional callback(current, total, filename) for progress updates
         """
         # Read auto_index from get_semantic_search_config()
-        config = get_semantic_search_config()
+        config = get_semantic_search_config(ctx=ctx)
         if not getattr(config, "auto_index", True):
-            return "AUTO-INDEX: disabled by config."
+            return "AUTO-INDEX: disabled by config. WARNING: search results may be stale."
 
         workspace_root = _get_workspace_root(ctx)
         
@@ -1596,6 +1671,9 @@ class SemanticIndexSearch:
                 else:
                     ledger[fp] = m_time
 
+            unsupported_stale = sum(1 for path, mtime in ledger.items()
+                                    if mtime == -1 and Path(path).suffix.lower() != ".py"
+                                    and (Path(path) if is_external else workspace_root / path).exists())
             to_reindex = []
             ignored_dirs = get_ignored_dirs(ctx=ctx)
             current_files_rel = set()
@@ -1603,6 +1681,11 @@ class SemanticIndexSearch:
             # Get search_dirs from config for whitelist mode
             semantic_config = get_semantic_search_config(ctx=ctx)
             search_dirs = semantic_config.search_dirs if semantic_config else []
+            
+            # Get all supported extensions from analyzer registry
+            from nagato_tools.insight_file_analyzers import get_analyzer_registry
+            registry = get_analyzer_registry()
+            supported_extensions = set(registry.get_supported_extensions())
             
             if search_dirs:
                 # Whitelist mode: only scan specified subdirectories
@@ -1621,7 +1704,12 @@ class SemanticIndexSearch:
                     if search_dir_name in ignored_dirs:
                         continue
                     
-                    for file_path in search_path.rglob("*.py"):
+                    for file_path in search_path.rglob("*"):
+                        if not file_path.is_file():
+                            continue
+                        ext = file_path.suffix.lower()
+                        if ext not in supported_extensions:
+                            continue
                         if scan_root.is_relative_to(workspace_root):
                             try:
                                 parts = file_path.relative_to(workspace_root).parts
@@ -1648,11 +1736,16 @@ class SemanticIndexSearch:
                         
                         if file_rel_path not in ledger:
                             to_reindex.append(file_rel_path)
-                        elif mtime > ledger[file_rel_path]:
+                        elif mtime != ledger[file_rel_path]:
                             to_reindex.append(file_rel_path)
             else:
                 # Blacklist mode (default): scan everything except ignored_dirs
-                for file_path in scan_root.rglob("*.py"):
+                for file_path in scan_root.rglob("*"):
+                    if not file_path.is_file():
+                        continue
+                    ext = file_path.suffix.lower()
+                    if ext not in supported_extensions:
+                        continue
                     # For files under workspace_root, check ignored_dirs using workspace-relative parts
                     # For external files, check ignored_dirs using parts relative to scan_root
                     if scan_root.is_relative_to(workspace_root):
@@ -1680,7 +1773,7 @@ class SemanticIndexSearch:
                     
                     if file_rel_path not in ledger:
                         to_reindex.append(file_rel_path)
-                    elif mtime > ledger[file_rel_path]:
+                    elif mtime != ledger[file_rel_path]:
                         to_reindex.append(file_rel_path)
 
             # Purge deleted files
@@ -1695,6 +1788,9 @@ class SemanticIndexSearch:
                     to_purge.append(ledger_path)
 
             if not to_reindex and not to_purge:
+                if unsupported_stale:
+                    return (f"WARNING: {unsupported_stale} non-Python file(s) need semantic reindexing; "
+                            "search results may be stale.")
                 return ""
 
             # Delete purge files
@@ -1723,7 +1819,7 @@ class SemanticIndexSearch:
                     
                     logger.info(f"Auto-indexing [{i+1}/{total_to_reindex}]: {file_rel_path}")
                     
-                    res = self.nagato_index_file_semantic(file_rel_path)
+                    res = self.nagato_index_file_semantic(file_rel_path, ctx)
                     if "Skipped:" in res or "ERROR:" in res or "not found" in res:
                         skipped_count += 1
                     else:
@@ -1735,10 +1831,14 @@ class SemanticIndexSearch:
             unchanged_count = len(current_files_rel) - len(to_reindex)
             if unchanged_count < 0:
                 unchanged_count = 0
-            return f"AUTO-INDEX: {updated_count} updated, {len(to_purge)} removed, {unchanged_count} unchanged."
+            return (f"AUTO-INDEX: {updated_count} updated, {len(to_purge)} removed, "
+                    f"{unchanged_count} unchanged, {skipped_count} skipped."
+                    + (f" WARNING: {unsupported_stale} non-Python file(s) need semantic reindexing."
+                       if unsupported_stale else "")
+                    + (" WARNING: search results may be stale." if skipped_count or unsupported_stale else ""))
 
         except Exception as e:
             # Broad rescue so search can proceed even if auto-indexing blows up
             print(f"Warning: Auto-index check failed: {e}")
-            return f"AUTO-INDEX FAIL: {e}"
+            return f"AUTO-INDEX FAIL: {e}. WARNING: search results may be stale."
 __all__ = []
