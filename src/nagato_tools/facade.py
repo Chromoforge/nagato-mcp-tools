@@ -17,6 +17,7 @@ try:
         repair_malformed_json,
         coerce_primitives,
         resolve_file_path,
+        normalize_relative_path,
     )
     _HAS_INPUT_REPAIR = True
 except ImportError:
@@ -105,11 +106,17 @@ class ToolFacade:
             nagato_dir = self._workspace_root / ".nagato"
             nagato_dir.mkdir(parents=True, exist_ok=True)
 
-            # 1. Directories
+            # 1. Directories - always create standalone dirs
             for subdir in ("redo_cache", "sessions", "standalone", "undo_cache"):
                 (nagato_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-            # 2. functions_config.json
+            # 2. Session-scoped directories (for custom session_id)
+            if self._mock_context is not None and self._mock_context.session_id != "standalone":
+                session_dir = nagato_dir / "sessions" / self._mock_context.session_id
+                (session_dir / "undo_cache").mkdir(parents=True, exist_ok=True)
+                (session_dir / "redo_cache").mkdir(parents=True, exist_ok=True)
+
+            # 3. functions_config.json
             fn_cfg_path = nagato_dir / "functions_config.json"
             if not fn_cfg_path.exists():
                 try:
@@ -118,7 +125,7 @@ class ToolFacade:
                 except Exception:
                     pass
 
-            # 3. standalone.yaml
+            # 4. standalone.yaml
             standalone_yaml_path = nagato_dir / "standalone.yaml"
             if not standalone_yaml_path.exists():
                 standalone_yaml_content = (
@@ -350,10 +357,16 @@ class ToolFacade:
                         repaired["_ctx"] = result["_ctx"]
                     result = repaired
 
-        # Fuzzy-resolve file-path params that don't exist on disk
-        for key, value in list(result.items()):
-            if isinstance(value, str) and ("file" in key or key.endswith("_path")):
-                result[key] = resolve_file_path(value, self._workspace_root)
+        func_name = getattr(func, "__name__", "")
+        # Fuzzy-resolve file-path params that don't exist on disk (skip creation tools)
+        if func_name in ("nagato_create_node", "nagato_create_dir", "nagato_create_file"):
+            for key, value in list(result.items()):
+                if isinstance(value, str) and value.strip() and value.strip() not in (".", "./", ".\\") and ("file" in key or key.endswith("_path") or key == "dir"):
+                    result[key] = normalize_relative_path(value, self._workspace_root)
+        else:
+            for key, value in list(result.items()):
+                if isinstance(value, str) and value.strip() and value.strip() not in (".", "./", ".\\") and ("file" in key or key.endswith("_path")):
+                    result[key] = resolve_file_path(value, self._workspace_root)
 
         # Clean symbol-name params: strip "call ", "def ", "async def ", "class ", etc.
         # This handles LLM mistakes like target_symbol="call XYZ" or target_symbol="def ABC"
@@ -418,36 +431,34 @@ class ToolFacade:
         result = None
         action_ctx = None
         if self._fsm is None and getattr(self.context, "active_action", None) is None:
-            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_create_node", "nagato_batch_nodes", "nagato_link_nodes", "nagato_collapse_nodes", "nagato_expand_nodes", "nagato_block_save", "nagato_block_delete", "nagato_block_import", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
-                try:
-                    from nagato_tools.action_journal import ActionJournal
-                    sess_id = getattr(self.context, "session_id", "standalone")
-                    journal_dir = self._workspace_root / ".nagato" / "sessions" / sess_id / "action_journal"
-                    aj = ActionJournal(journal_dir, self._workspace_root, session_id=sess_id)
-                    clean_kwargs = {k: str(v) for k, v in kwargs.items() if k != '_ctx'}
-                    args_preview = str(clean_kwargs or [str(a) for a in args])[:200]
-                    action_ctx = aj.begin_action(func_name, args_preview=args_preview)
-                    self.context.active_action = action_ctx
-                except Exception:
-                    pass
+            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_rename", "nagato_edit_node", "nagato_edit_node_lines", "nagato_delete_node", "nagato_write_plan", "nagato_write_plan_node", "nagato_create_dir", "nagato_create_node", "nagato_batch_nodes", "nagato_link_nodes", "nagato_collapse_nodes", "nagato_expand_nodes", "nagato_block_save", "nagato_block_load", "nagato_block_delete", "nagato_block_export", "nagato_block_import", "nagato_sync_ast_to_insight", "nagato_sync_file_all", "nagato_sync_directory_all", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
+                from nagato_tools.action_journal import ActionJournal
+                sess_id = getattr(self.context, "session_id", "standalone")
+                journal_dir = self._workspace_root / ".nagato" / "sessions" / sess_id / "action_journal"
+                aj = ActionJournal(journal_dir, self._workspace_root, session_id=sess_id, context=self.context)
+                clean_kwargs = {k: str(v) for k, v in kwargs.items() if k != '_ctx'}
+                args_preview = str(clean_kwargs or [str(a) for a in args])[:200]
+                action_ctx = aj.begin_action(func_name, args_preview=args_preview)
+                self.context.active_action = action_ctx
 
         try:
             result = func(*args, **kwargs)
             if action_ctx is not None:
                 try:
-                    action_ctx.commit()
-                except Exception:
-                    pass
-                self.context.active_action = None
+                    if isinstance(result, str) and "PARTIAL SUCCESS:" not in result and any(line.startswith(("ERROR[", "ERROR:", "AST_INSIGHT_SYNC_ERROR:")) for line in result.splitlines()):
+                        action_ctx.abort(result)
+                    else:
+                        action_ctx.commit()
+                finally:
+                    self.context.active_action = None
             return result
         except Exception as exc:
             err_msg = str(exc)
             if action_ctx is not None:
                 try:
                     action_ctx.abort()
-                except Exception:
-                    pass
-                self.context.active_action = None
+                finally:
+                    self.context.active_action = None
             raise
         finally:
             # Emit telemetry event in standalone mode if no active FSM session is managing it
@@ -513,18 +524,15 @@ class ToolFacade:
         result = None
         action_ctx = None
         if self._fsm is None and getattr(self.context, "active_action", None) is None:
-            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_create_node", "nagato_batch_nodes", "nagato_link_nodes", "nagato_collapse_nodes", "nagato_expand_nodes", "nagato_block_save", "nagato_block_delete", "nagato_block_import", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
-                try:
-                    from nagato_tools.action_journal import ActionJournal
-                    sess_id = getattr(self.context, "session_id", "standalone")
-                    journal_dir = self._workspace_root / ".nagato" / "sessions" / sess_id / "action_journal"
-                    aj = ActionJournal(journal_dir, self._workspace_root, session_id=sess_id)
-                    clean_kwargs = {k: str(v) for k, v in kwargs.items() if k != '_ctx'}
-                    args_preview = str(clean_kwargs or [str(a) for a in args])[:200]
-                    action_ctx = aj.begin_action(func_name, args_preview=args_preview)
-                    self.context.active_action = action_ctx
-                except Exception:
-                    pass
+            if func_name in ("nagato_edit", "nagato_edit_lines", "nagato_delete", "nagato_rename", "nagato_edit_node", "nagato_edit_node_lines", "nagato_delete_node", "nagato_write_plan", "nagato_write_plan_node", "nagato_create_dir", "nagato_create_node", "nagato_batch_nodes", "nagato_link_nodes", "nagato_collapse_nodes", "nagato_expand_nodes", "nagato_block_save", "nagato_block_load", "nagato_block_delete", "nagato_block_export", "nagato_block_import", "nagato_sync_ast_to_insight", "nagato_sync_file_all", "nagato_sync_directory_all", "nagato_insight_promote_to_global", "nagato_log_event", "nagato_register_algorithm", "nagato_register_protocol", "nagato_link_implementation"):
+                from nagato_tools.action_journal import ActionJournal
+                sess_id = getattr(self.context, "session_id", "standalone")
+                journal_dir = self._workspace_root / ".nagato" / "sessions" / sess_id / "action_journal"
+                aj = ActionJournal(journal_dir, self._workspace_root, session_id=sess_id, context=self.context)
+                clean_kwargs = {k: str(v) for k, v in kwargs.items() if k != '_ctx'}
+                args_preview = str(clean_kwargs or [str(a) for a in args])[:200]
+                action_ctx = aj.begin_action(func_name, args_preview=args_preview)
+                self.context.active_action = action_ctx
 
         try:
             if self.is_async(func_name):
@@ -538,19 +546,20 @@ class ToolFacade:
                 result = await running_loop.run_in_executor(None, lambda: func(*args, **kwargs))
             if action_ctx is not None:
                 try:
-                    action_ctx.commit()
-                except Exception:
-                    pass
-                self.context.active_action = None
+                    if isinstance(result, str) and "PARTIAL SUCCESS:" not in result and any(line.startswith(("ERROR[", "ERROR:", "AST_INSIGHT_SYNC_ERROR:")) for line in result.splitlines()):
+                        action_ctx.abort(result)
+                    else:
+                        action_ctx.commit()
+                finally:
+                    self.context.active_action = None
             return result
         except Exception as exc:
             err_msg = str(exc)
             if action_ctx is not None:
                 try:
                     action_ctx.abort()
-                except Exception:
-                    pass
-                self.context.active_action = None
+                finally:
+                    self.context.active_action = None
             raise
         finally:
             if self._fsm is None:
