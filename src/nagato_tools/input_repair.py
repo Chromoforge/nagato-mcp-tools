@@ -147,36 +147,85 @@ def coerce_primitives(kwargs: Dict[str, Any], sig: Any) -> Dict[str, Any]:
     return result
 
 
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def normalize_relative_path(path: str, workspace_root: Path) -> str:
+    """Normalize a path to a workspace-relative path with forward slashes.
+    
+    Leaves empty strings, dots, or paths escaping workspace unchanged.
+    """
+    if not isinstance(path, str) or not path.strip() or path.strip() in (".", "./", ".\\"):
+        return path
+    
+    expanded = os.path.expanduser(path.strip())
+    p = Path(expanded)
+    ws_resolved = workspace_root.resolve()
+    
+    if p.is_absolute():
+        try:
+            rel = p.resolve().relative_to(ws_resolved)
+            return str(rel).replace("\\", "/")
+        except ValueError:
+            return path
+            
+    resolved = (workspace_root / p).resolve()
+    try:
+        rel = resolved.relative_to(ws_resolved)
+        return str(rel).replace("\\", "/")
+    except ValueError:
+        return path
+
+
 def resolve_file_path(path: str, workspace_root: Path) -> str:
     """
     Resolve a file path relative to workspace root.
     
     Handles:
-    - Relative paths
+    - Empty or non-string paths (returned unchanged)
+    - Relative paths (kept relative if within workspace)
     - Paths with ~ expansion
-    - Paths that may not exist yet (for creation)
+    - Absolute paths (relativized if inside workspace)
+    - Fuzzy-matching if path does not exist on disk
     """
-    if not isinstance(path, str):
+    if not isinstance(path, str) or not path.strip() or path.strip() in (".", "./", ".\\"):
         return path
     
-    # Expand user home
-    path = os.path.expanduser(path)
-    
-    # If already absolute, return as-is
-    if os.path.isabs(path):
-        return path
-    
-    # Resolve relative to workspace root
-    resolved = (workspace_root / path).resolve()
-    
-    # Security: ensure it's within workspace
-    try:
-        resolved.relative_to(workspace_root.resolve())
-    except ValueError:
-        # Path escapes workspace, return original
-        return path
-    
-    return str(resolved)
+    norm = normalize_relative_path(path, workspace_root)
+    if (workspace_root / norm).exists():
+        return norm
+
+    # Fuzzy match if candidate doesn't exist
+    raw_stem = Path(norm).name
+    threshold = max(2, len(raw_stem) // 4)
+    best_dist = threshold + 1
+    best_rel: Optional[str] = None
+    _FUZZY_SKIP_DIRS = {".venv", "__pycache__", ".git", "node_modules", ".mypy_cache", "dist"}
+
+    for dirpath, dirnames, filenames in os.walk(workspace_root):
+        dirnames[:] = [d for d in dirnames if d not in _FUZZY_SKIP_DIRS]
+        for fname in filenames:
+            dist = _levenshtein_distance(raw_stem, fname)
+            if dist < best_dist:
+                best_dist = dist
+                best_rel = str(Path(dirpath).relative_to(workspace_root) / fname).replace("\\", "/")
+
+    return best_rel if best_rel is not None else norm
 
 
 import os
