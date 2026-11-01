@@ -346,6 +346,16 @@ async def nagato_searchInFiles(query: str, dir: str, max_results_per_file: int =
     return alert_prefix + notice + _truncate_to_token_limit(result, ctx=ctx)
 
 
+def _ensure_semantic_index_current(config: dict, ctx: Any, progress_callback: Optional[Callable]) -> str:
+    indexer = SemanticIndexSearch(config=config)
+    try:
+        return indexer.ensure_index_current(ctx=ctx)
+    finally:
+        connection = getattr(indexer, "conn", None)
+        if connection is not None:
+            connection.close()
+
+
 async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int = 0, _ctx: Optional[Any] = None) -> str:
     """
     Performs semantic vector search across the indexed code chunks.
@@ -357,11 +367,12 @@ async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int =
     ctx = _get_context(_ctx)
     try:
         config = _get_semantic_config(ctx)
-        indexer = SemanticIndexSearch(config={
+        index_config = {
             "db_path": config.db_path,
             "embedding_model": config.embedding_model,
             "docstring_only": config.docstring_only,
-        })
+        }
+        indexer = SemanticIndexSearch(config=index_config)
         
         # Auto-index check - run in thread pool to avoid blocking the event loop
         auto_index_summary = ""
@@ -369,11 +380,10 @@ async def nagato_semantic_search(query: str, limit: int = 3, start_offset: int =
             loop = asyncio.get_running_loop()
             executor = _get_auto_index_executor()
             auto_index_summary = await loop.run_in_executor(
-                executor,
-                lambda: indexer.ensure_index_current(ctx=ctx)
+                executor, _ensure_semantic_index_current, index_config, ctx, None
             )
         except Exception as e:
-            print(f"Warning: Failed to ensure semantic index is current: {e}")
+            auto_index_summary = f"WARNING: Semantic index refresh failed: {e}; search results may be stale."
 
         result = indexer.core_nagato_semantic_search(query, limit=limit, start_offset=start_offset)
         
