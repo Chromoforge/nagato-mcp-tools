@@ -49,9 +49,6 @@ def nagato_write_plan(path: str, content: str, _ctx: Optional[Any] = None) -> st
     except (ValueError, OSError):
         return f"ERROR[nagato_write_plan]: Path '{path}' resolves outside .github/plans/ directory"
     
-    # Ensure plans directory exists
-    plans_dir.mkdir(parents=True, exist_ok=True)
-    
     # Parse and validate the ## Steps section BEFORE writing
     try:
         phases = parse_plan_steps(content)
@@ -62,23 +59,36 @@ def nagato_write_plan(path: str, content: str, _ctx: Optional[Any] = None) -> st
     old_content = None
     is_new = False
     if target_path.exists():
-        old_content = target_path.read_text(encoding="utf-8")
+        with target_path.open("r", encoding="utf-8", newline="") as old_file:
+            old_content = old_file.read()
     else:
         is_new = True
+
+    ctx = _get_context(_ctx)
+    action_context = getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
+    missing_dirs = []
+    parent = target_path.parent
+    while parent != workspace_root and not parent.exists():
+        missing_dirs.append(parent)
+        parent = parent.parent
+    for parent in reversed(missing_dirs):
+        parent.mkdir()
+        if action_context is not None:
+            action_context.record_file_change(parent.relative_to(workspace_root).as_posix(), is_new=True, is_directory=True)
     
     # Write the file
     try:
-        target_path.write_text(content, encoding="utf-8")
+        target_path.write_text(content, encoding="utf-8", newline="")
     except Exception as e:
         return f"ERROR[nagato_write_plan]: Failed to write file - {e}"
     
     # Track for standalone undo
-    ctx = _get_context(_ctx)
     if hasattr(ctx, 'track_edit_for_undo'):
         ctx.track_edit_for_undo(str(target_path.relative_to(workspace_root)), old_content=old_content, new_content=content, is_new=is_new)
-    action_context = getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
     if action_context is not None and hasattr(action_context, "record_file_change"):
         action_context.record_file_change(str(target_path.relative_to(workspace_root)), before_content=old_content, after_content=content, is_new=is_new)
+        from nagato_tools.insight_sync_hooks import trigger_post_edit_sync
+        trigger_post_edit_sync(target_path.relative_to(workspace_root).as_posix(), ctx)
     
     # Count phases and steps for confirmation
     phase_count = len(phases)
