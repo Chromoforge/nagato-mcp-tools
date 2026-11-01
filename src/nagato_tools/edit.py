@@ -574,7 +574,8 @@ async def nagato_delete(
         file_size = target_file.stat().st_size
         
         # Read content for standalone undo tracking
-        content = target_file.read_text(encoding="utf-8")
+        with target_file.open("r", encoding="utf-8", newline="") as file_content:
+            content = file_content.read()
 
         ctx = _get_context(_ctx)
         
@@ -635,6 +636,9 @@ async def nagato_rename(
     if not source_file.exists():
         return nagato_error(f"Source file {source} not found.", tool="nagato_rename")
 
+    if source_file == dest_file:
+        return f"File {source} is already at the destination."
+
     if dest_file.exists() and not overwrite:
         return nagato_error(f"Destination file {destination} already exists. Use overwrite=True to replace.", tool="nagato_rename")
 
@@ -650,7 +654,12 @@ async def nagato_rename(
         file_size = source_file.stat().st_size
         
         # Read content for standalone undo tracking
-        content = source_file.read_text(encoding="utf-8")
+        with source_file.open("r", encoding="utf-8", newline="") as source_content:
+            content = source_content.read()
+        destination_content = None
+        if dest_file.exists():
+            with dest_file.open("r", encoding="utf-8", newline="") as existing_destination:
+                destination_content = existing_destination.read()
 
         ctx = _get_context(_ctx)
         
@@ -674,6 +683,20 @@ async def nagato_rename(
                 shutil.move(str(source_file), str(dest_file))
             else:
                 raise
+
+        action_context = getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
+        if action_context is not None:
+            action_context.record_file_change(source, before_content=content, is_delete=True)
+            action_context.record_file_change(destination, before_content=destination_content, after_content=content,
+                                              is_new=destination_content is None)
+            from nagato_tools.insight_store import InsightStore
+            store = InsightStore(workspace_root=workspace_root, session_id=getattr(ctx, "session_id", None),
+                                 action_context=action_context)
+            try:
+                store.move_file_nodes(source_file.relative_to(workspace_root).as_posix(),
+                                      dest_file.relative_to(workspace_root).as_posix())
+            finally:
+                store.close()
         
         # Update symbol index for both files
         sync_queued_source = (_get_semantic_indexer().update_symbol_tables_only(source) and False)
@@ -722,6 +745,11 @@ async def nagato_create_dir(
         return f"Directory {dir} already exists."
 
     try:
+        missing_dirs = []
+        current = target_dir
+        while current != workspace_root and not current.exists():
+            missing_dirs.append(current)
+            current = current.parent
         target_dir.mkdir(parents=parents, exist_ok=exist_ok)
 
         # Track for standalone and action journal undo
@@ -730,7 +758,8 @@ async def nagato_create_dir(
             ctx.track_edit_for_undo(dir, old_content=None, new_content="", is_new=True, is_directory=True)
         action_context = getattr(ctx, "active_action", None) or getattr(ctx, "action_context", None)
         if action_context is not None and hasattr(action_context, "record_file_change"):
-            action_context.record_file_change(dir, before_content=None, after_content="", is_new=True, is_delete=False, is_directory=True)
+            for created_dir in reversed(missing_dirs):
+                action_context.record_file_change(created_dir.relative_to(workspace_root).as_posix(), is_new=True, is_directory=True)
 
         return f"SUCCESS: Directory {dir} created."
     except Exception as e:
