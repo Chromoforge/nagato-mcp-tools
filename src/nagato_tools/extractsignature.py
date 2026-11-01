@@ -98,6 +98,7 @@ class SignatureExtractor(ast.NodeVisitor):
             "kind": kind,
             "file": self.file_path,
             "line": node.lineno,
+            "end_line": getattr(node, "end_lineno", node.lineno),
             "args": args,
             "returns": self._extract_return(node) if kind != "class" else None,
             "decorators": [self._expr_to_str(d) for d in getattr(node, "decorator_list", [])],
