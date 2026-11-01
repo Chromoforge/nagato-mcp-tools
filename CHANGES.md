@@ -51,12 +51,40 @@ Changelog for Nagato MCP Tools, based on [Keep a Changelog](https://keepachangel
 - **Edit Tool Lint Context Propagation** (`src/nagato_tools/edit.py`): Updated `nagato_lint` calls in `nagato_edit` and `nagato_edit_lines` to pass the MCP context (`_ctx`) parameter, ensuring lint operations have access to workspace context for cross-workspace path resolution and configuration.
 - **Sync Rewrites for Workspace Registry** (`sync_tools.py`): Added regex import rewrites mapping `fsm.workspace_registry` to `nagato_tools.workspace_registry` during standalone tool builds.
 - **Standalone Facade Category Resolution** (`src/nagato_tools/facade.py`): All registered standalone tools now cleanly resolve to their respective `ToolCategory` (no UNKNOWN entries).
+- **Undo System Directory Support** (`src/nagato_tools/action_journal.py`, `src/nagato_tools/edit.py`): Added `is_directory` field to `FileEffect` class enabling proper undo/redo of directory create/delete operations. Updated `nagato_create_dir` to track directory changes in both standalone undo system and action journal. Fixed conflict detection and state restoration for directories (using `mkdir`/`rmdir` instead of file read/write).
+- **Plan Path Normalization** (`src/nagato_tools/plan.py`): Normalize plan paths prefixed with `.github/plans/` to prevent path traversal issues and ensure consistent storage under `.github/plans/`.
 
 ### Refactored
 - **Semantic Index Combined Sync & AST-Aware Chunking** (`src/nagato_tools/semanticindex.py`): Added `sync_file_all()` for combined single-pass sync updating semantic index (code_chunks, global_symbols, global_calls) in one atomic operation. Replaced EmbeddingModels with FastEmbed-based lazy loading. Implemented AST-aware chunk splitting via `_split_large_chunk_ast_aware()` with statement-boundary awareness. Added `docstring_only` mode support. Enhanced code_chunks table with symbol_name and chunk_type columns. Added graceful fallback for non-Python files using sliding-window chunking.
 
 ### Maintenance
 - **WebUI Assets** (`src/nagato_tools/webui_dist/`): Updated to new Vite build (`index-CGTfLYGS.js`, `index-MtSVh_jA.css`).
+
+## [Unreleased] - 2026-11-01
+
+### Added
+- **Action Journal Step Tracking** (`src/nagato_tools/action_journal.py`): Added `journal_step` parameter to `ActionContext.commit()` for explicit step control. Implemented `finalize_action_for_undo()` and `discard_action_for_undo()` in `MockFSMContext` for snapshot lifecycle management.
+- **File Rename with Full Undo Tracking** (`src/nagato_tools/edit.py`): Implemented `nagato_rename` with complete undo tracking for both source and destination files. Added graph node relocation support on rename operations.
+- **Directory Creation Parent Tracking** (`src/nagato_tools/edit.py`, `src/nagato_tools/plan.py`): Track intermediate parent directories in `nagato_create_dir` and `nagato_write_plan` for proper undo support of nested directory structures.
+- **Fuzzy Path Resolution** (`src/nagato_tools/input_repair.py`): Implemented Levenshtein distance-based fuzzy matching for non-existent paths. Added `normalize_relative_path()` to convert paths to workspace-relative format. Enhanced `resolve_file_path()` with fuzzy fallback when exact path not found.
+- **Signature End Line Tracking** (`src/nagato_tools/extractsignature.py`): Include `end_lineno` attribute in extracted signatures for precise range tracking and better tooling support.
+- **Semantic Index Staleness Marking** (`src/nagato_tools/undo.py`, `src/nagato_tools/semanticindex.py`): Added `mark_semantic_files_stale()` for external invalidation tracking. Integrated semantic index staleness marking on undo/redo operations.
+
+### Changed
+- **Action Journal Conflict Validation** (`src/nagato_tools/action_journal.py`): Strengthened undo/redo validation with SHA-256 content hashing, cross-effect dependency checks, and SqliteRowEffect rowid column support for primary key tracking.
+- **Facade Action Journal Integration** (`src/nagato_tools/facade.py`): Extended action journal coverage to all mutating tools (edit, rename, create, sync, plan, block operations). Added error-aware commit/abort logic based on result content analysis. Pass action context to semantic index sync operations for unified tracking.
+- **Semantic Index Multi-Language Support** (`src/nagato_tools/semanticindex.py`): Replaced Python-only AST parsing with analyzer registry for multi-language support. Implemented incremental reindexing with mtime comparison supporting non-Python files. Added supported_extensions filtering from analyzer registry.
+- **Search Index Refresh** (`src/nagato_tools/search.py`): Extracted semantic index refresh logic to dedicated `_ensure_semantic_index_current()` helper. Improved error handling with explicit warning messages on index refresh failure.
+- **Undo Snapshot Ordering** (`src/nagato_tools/undo.py`): Added timestamp-based snapshot sorting for reliable history ordering. Implemented journaled snapshot migration with validation and rollback support.
+
+### Fixed
+- **File I/O Line Ending Consistency** (`src/nagato_tools/edit.py`, `src/nagato_tools/plan.py`, `src/nagato_tools/undo.py`): Use explicit file open with `newline=''` for consistent line ending handling across platforms.
+- **Rename Edge Case** (`src/nagato_tools/edit.py`): Add early return when source equals destination in rename operation.
+- **Fuzzy Path Virtual Paths** (`src/nagato_tools/input_repair.py`): Skip fuzzy matching for virtual paths (`.`, `./`, `.\\`) and empty strings. Exclude common build/cache directories from fuzzy search (`.venv`, `__pycache__`, `.git`, etc.).
+- **Undo Redo Multi-Step** (`src/nagato_tools/undo.py`): Fixed multi-step redo to process sequentially with proper error handling.
+
+### Maintenance
+- **WebUI Assets** (`src/nagato_tools/webui_dist/`): Updated to new Vite build (`index-CBXh4o5G.js`).
 
 ## [0.2.5] - 2026-10-10
 
