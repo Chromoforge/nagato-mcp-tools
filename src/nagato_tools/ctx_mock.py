@@ -268,11 +268,13 @@ class MockFSMContext:
     @property
     def undo_dir(self) -> Path:
         """Directory for standalone undo snapshots."""
+        self._undo_dir.mkdir(parents=True, exist_ok=True)
         return self._undo_dir
     
     @property
     def redo_dir(self) -> Path:
         """Directory for standalone redo snapshots."""
+        self._redo_dir.mkdir(parents=True, exist_ok=True)
         return self._redo_dir
     
     @property
@@ -432,6 +434,10 @@ class MockFSMContext:
             "created_dirs": created_dirs or [],
             "graph_effects": graph_effects or {},
         }
+        action = getattr(self, "active_action", None)
+        if action is not None:
+            snapshot["action_id"] = action.action_id
+            snapshot["action_step"] = action.step_id
 
         # Save snapshot with unique filename (timestamp + UUID to avoid collisions)
         snapshot_file = undo_dir / f"snapshot_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.json"
@@ -443,6 +449,38 @@ class MockFSMContext:
         if len(snapshots) > 50:
             for old_snap in snapshots[:-50]:
                 old_snap.unlink()
+
+    def finalize_action_for_undo(self, action) -> None:
+        import json
+
+        matches = []
+        for path in self.undo_dir.glob("snapshot_*.json"):
+            with path.open(encoding="utf-8") as file:
+                snapshot = json.load(file)
+            if snapshot.get("action_id") == action.action_id:
+                matches.append(path)
+        if not matches:
+            self.track_edit_for_undo(action.manifest.command)
+        else:
+            matches.sort()
+            with matches[-1].open(encoding="utf-8") as file:
+                snapshot = json.load(file)
+            snapshot["action_step"] = action.step_id
+            with matches[-1].open("w", encoding="utf-8") as file:
+                json.dump(snapshot, file, ensure_ascii=False, indent=2)
+            for path in sorted(matches)[:-1]:
+                path.unlink()
+        for path in self.redo_dir.glob("snapshot_*.json"):
+            path.unlink()
+
+    def discard_action_for_undo(self, action) -> None:
+        import json
+
+        for path in self.undo_dir.glob("snapshot_*.json"):
+            with path.open(encoding="utf-8") as file:
+                snapshot = json.load(file)
+            if snapshot.get("action_id") == action.action_id:
+                path.unlink()
     
     def standalone_undo(self, mode: str = "step", value: Union[int, float, str] = 1) -> str:
         """

@@ -58,17 +58,7 @@ def _safe_replace_file(src: Path, dst: Path, retries: int = 5, delay: float = 0.
             if attempt < retries - 1:
                 time.sleep(delay * (attempt + 1))
             else:
-                # Last resort fallback if atomic replace is locked
-                try:
-                    if dst.exists():
-                        try:
-                            dst.unlink()
-                        except Exception:
-                            pass
-                    src.replace(dst)
-                    return
-                except Exception:
-                    raise exc
+                raise exc
 
 
 def _encode_sqlite_value(val: Any) -> Any:
@@ -219,7 +209,8 @@ class FileEffect:
             if not target.exists():
                 raise UndoConflictError(f"UNDO_CONFLICT: File/directory {self.file_path} expected to exist for undo, but not found.")
             if not self.is_directory and not target.is_dir():
-                current_content = target.read_text(encoding="utf-8", errors="replace")
+                with target.open("r", encoding="utf-8", errors="replace", newline="") as file:
+                    current_content = file.read()
                 current_hash = _compute_sha256(current_content)
                 if self.after_hash and current_hash != self.after_hash:
                     raise UndoConflictError(f"UNDO_CONFLICT: File {self.file_path} content hash mismatch before undo.")
@@ -237,10 +228,7 @@ class FileEffect:
         else:
             if target.exists():
                 if self.is_directory or target.is_dir():
-                    try:
-                        target.rmdir()
-                    except OSError:
-                        pass
+                    target.rmdir()
                 else:
                     target.unlink()
 
@@ -251,7 +239,8 @@ class FileEffect:
             if not target.exists():
                 raise UndoConflictError(f"REDO_CONFLICT: File/directory {self.file_path} expected to exist for redo, but not found.")
             if not self.is_directory and not target.is_dir():
-                current_content = target.read_text(encoding="utf-8", errors="replace")
+                with target.open("r", encoding="utf-8", errors="replace", newline="") as file:
+                    current_content = file.read()
                 current_hash = _compute_sha256(current_content)
                 if self.before_hash and current_hash != self.before_hash:
                     raise UndoConflictError(f"REDO_CONFLICT: File {self.file_path} content hash mismatch before redo.")
@@ -269,10 +258,7 @@ class FileEffect:
         else:
             if target.exists():
                 if self.is_directory or target.is_dir():
-                    try:
-                        target.rmdir()
-                    except OSError:
-                        pass
+                    target.rmdir()
                 else:
                     target.unlink()
 
@@ -399,7 +385,8 @@ class SqliteRowEffect:
 
     def _fetch_current_row(self, conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
         where_clauses = [f"{col} = ?" for col in self.pk_columns]
-        sql = f"SELECT * FROM {self.table} WHERE {' AND '.join(where_clauses)}"
+        columns = "rowid, *" if "rowid" in self.pk_columns else "*"
+        sql = f"SELECT {columns} FROM {self.table} WHERE {' AND '.join(where_clauses)}"
         params = [self.pk_values[col] for col in self.pk_columns]
         cursor = conn.execute(sql, params)
         row = cursor.fetchone()
@@ -697,14 +684,23 @@ class ActionContext:
         )
         self.add_effect(effect)
 
-    def commit(self, state_after: Optional[str] = None) -> None:
+    def commit(self, state_after: Optional[str] = None, journal_step: Optional[int] = None) -> None:
         if self._is_finished:
+            return
+        if self.journal.context is not None and not self.manifest.effects:
+            self.abort("Action has no effects")
             return
         if state_after:
             self.manifest.state_after = state_after
         self.manifest.state = ActionState.COMMITTED.value
         self.manifest.committed_at = datetime.now(timezone.utc).isoformat()
-        self.journal._commit_action(self.manifest)
+        original_step = self.manifest.step_id
+        self.manifest.step_id = journal_step if journal_step is not None else self.journal._read_pointer()["current_step"] + 1
+        self.journal._commit_action(self.manifest, append_index=journal_step is None)
+        if original_step != self.manifest.step_id:
+            self.journal._manifest_path(original_step).unlink(missing_ok=True)
+        if self.journal.context is not None:
+            self.journal.context.finalize_action_for_undo(self)
         self._is_finished = True
 
     def abort(self, reason: Optional[str] = None) -> None:
@@ -714,6 +710,8 @@ class ActionContext:
         self.journal._compensate_effects(self.manifest.effects)
         self.manifest.state = ActionState.ABORTED.value
         self.journal._write_manifest(self.manifest)
+        if self.journal.context is not None:
+            self.journal.context.discard_action_for_undo(self)
         _emit_telemetry(
             self.manifest.session_id,
             "ACTION_ABORTED",
@@ -737,10 +735,12 @@ class ActionJournal:
         journal_root: Path,
         workspace_root: Path,
         session_id: str = "standalone",
+        context: Optional[Any] = None,
     ):
         self.journal_root = Path(journal_root)
         self.workspace_root = Path(workspace_root)
         self.session_id = session_id
+        self.context = context
         self.journal_root.mkdir(parents=True, exist_ok=True)
         self._pointer_file = self.journal_root / "pointer.json"
         self._index_file = self.journal_root / "index.jsonl"
@@ -816,10 +816,7 @@ class ActionJournal:
         """Apply inverse of effects in reverse order."""
         for effect in reversed(effects):
             if hasattr(effect, "apply_undo"):
-                try:
-                    effect.apply_undo(self.workspace_root, self.session_id)
-                except Exception:
-                    pass
+                effect.apply_undo(self.workspace_root, self.session_id)
 
     def begin_action(
         self,
@@ -844,9 +841,10 @@ class ActionJournal:
         self._write_manifest(manifest)
         return ActionContext(self, manifest)
 
-    def _commit_action(self, manifest: ActionManifest) -> None:
+    def _commit_action(self, manifest: ActionManifest, append_index: bool = True) -> None:
         self._write_manifest(manifest)
-        self._append_index(manifest)
+        if append_index:
+            self._append_index(manifest)
         # Linear redo: advance both current_step and max_step to this step_id
         self._write_pointer(current_step=manifest.step_id, max_step=manifest.step_id)
         _emit_telemetry(
@@ -863,6 +861,42 @@ class ActionJournal:
             workspace_root=self.workspace_root,
         )
 
+    def _apply_effects(self, effects: List[Any], redo: bool) -> None:
+        applied = []
+        direction = "apply_redo" if redo else "apply_undo"
+        reverse_direction = "apply_undo" if redo else "apply_redo"
+        try:
+            for effect in effects if redo else reversed(effects):
+                if hasattr(effect, direction):
+                    getattr(effect, direction)(self.workspace_root, self.session_id)
+                    applied.append(effect)
+        except Exception as exc:
+            try:
+                for effect in reversed(applied):
+                    getattr(effect, reverse_direction)(self.workspace_root, self.session_id)
+            except Exception as rollback_exc:
+                raise UndoConflictError(f"Action failed: {exc}; rollback also failed: {rollback_exc}") from rollback_exc
+            raise
+
+    def _replay_step(self, manifest: ActionManifest, redo: bool, current_step: int, max_step: int) -> None:
+        previous_state = manifest.state
+        self._apply_effects(manifest.effects, redo=redo)
+        manifest_written = False
+        try:
+            manifest.state = ActionState.COMMITTED.value if redo else ActionState.UNDONE.value
+            self._write_manifest(manifest)
+            manifest_written = True
+            self._write_pointer(current_step=current_step, max_step=max_step)
+        except Exception as exc:
+            try:
+                self._apply_effects(manifest.effects, redo=not redo)
+                if manifest_written:
+                    manifest.state = previous_state
+                    self._write_manifest(manifest)
+            except Exception as rollback_exc:
+                raise UndoConflictError(f"History update failed: {exc}; rollback also failed: {rollback_exc}") from rollback_exc
+            raise
+
     def undo_to_step(self, target_step: int) -> Tuple[bool, str]:
         """Undo backward from current_step to target_step (applying effects in reverse)."""
         pointer = self._read_pointer()
@@ -876,16 +910,11 @@ class ActionJournal:
         undone_count = 0
         for step in range(current_step, target_step, -1):
             manifest = self.load_manifest(step)
-            if manifest is not None and manifest.state in (ActionState.COMMITTED.value, ActionState.UNDONE.value):
-                # Apply undo for all effects in reverse order
-                for effect in reversed(manifest.effects):
-                    if hasattr(effect, "apply_undo"):
-                        effect.apply_undo(self.workspace_root, self.session_id)
-                manifest.state = ActionState.UNDONE.value
-                self._write_manifest(manifest)
-                undone_count += 1
+            if manifest is None or manifest.state != ActionState.COMMITTED.value:
+                raise UndoConflictError(f"Missing or invalid undo history at step {step}.")
+            self._replay_step(manifest, redo=False, current_step=step - 1, max_step=pointer["max_step"])
+            undone_count += 1
 
-        self._write_pointer(current_step=target_step, max_step=pointer["max_step"])
         _emit_telemetry(
             self.session_id,
             "ACTION_UNDONE",
@@ -908,16 +937,11 @@ class ActionJournal:
         redone_count = 0
         for step in range(current_step + 1, target_step + 1):
             manifest = self.load_manifest(step)
-            if manifest is not None:
-                # Apply redo for all effects in forward order
-                for effect in manifest.effects:
-                    if hasattr(effect, "apply_redo"):
-                        effect.apply_redo(self.workspace_root, self.session_id)
-                manifest.state = ActionState.COMMITTED.value
-                self._write_manifest(manifest)
-                redone_count += 1
+            if manifest is None or manifest.state != ActionState.UNDONE.value:
+                raise UndoConflictError(f"Missing or invalid redo history at step {step}.")
+            self._replay_step(manifest, redo=True, current_step=step, max_step=max_step)
+            redone_count += 1
 
-        self._write_pointer(current_step=target_step, max_step=max_step)
         _emit_telemetry(
             self.session_id,
             "ACTION_REDONE",
@@ -932,6 +956,11 @@ class ActionJournal:
         recovered = 0
         if not self._steps_dir.exists():
             return 0
+        committed_ids = set()
+        for step in range(1, self._read_pointer()["max_step"] + 1):
+            manifest = self.load_manifest(step)
+            if manifest is not None and manifest.state in (ActionState.COMMITTED.value, ActionState.UNDONE.value):
+                committed_ids.add(manifest.action_id)
         for step_dir in sorted(self._steps_dir.iterdir()):
             if not step_dir.is_dir():
                 continue
@@ -942,6 +971,9 @@ class ActionJournal:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 if data.get("state") == ActionState.PREPARING.value:
                     manifest = ActionManifest.from_dict(data)
+                    if manifest.action_id in committed_ids:
+                        manifest_file.unlink()
+                        continue
                     self._compensate_effects(manifest.effects)
                     manifest.state = ActionState.RECOVERED_ABORT.value
                     self._write_manifest(manifest)
